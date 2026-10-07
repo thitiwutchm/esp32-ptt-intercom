@@ -206,6 +206,7 @@ static void test_sip_parse(void)
 
 static char g_sent[8][SIP_BUF_SIZE];
 static int g_nsent;
+static uint16_t g_last_port;
 static sip_call_info_t g_info;
 static int g_call_events;
 static sip_reg_state_t g_reg;
@@ -215,7 +216,7 @@ static void t_send(void *ctx, const char *buf, size_t len, uint32_t ip, uint16_t
 {
     (void)ctx;
     (void)ip;
-    (void)port;
+    g_last_port = port;
     if (g_nsent < 8) {
         memcpy(g_sent[g_nsent], buf, len);
         g_sent[g_nsent][len] = '\0';
@@ -567,6 +568,25 @@ static void test_echo_ref(void)
     CHECK(delay_find(x, 10, y, YN, &conf) == -1);
 }
 
+/* A softphone on a laptop set as the "PBX" calls us directly from its own port. */
+static void test_ua_direct_softphone(void)
+{
+    sip_ua_cfg_t cfg = {.domain = "192.168.1.10", .server_port = 5060, .user = "200", .password = "",
+                        .local_port = 5060, .rtp_port = 40000, .expires = 300};
+    cfg.server_ip = ip_of("192.168.1.10");
+    cfg.local_ip = ip_of("192.168.1.50");
+    sip_ua_ops_t ops = {.send = t_send, .reg_changed = t_reg, .call_changed = t_call, .random = t_rand};
+    static sip_ua_t ua;
+    sip_ua_init(&ua, &cfg, &ops, 0);
+    g_nsent = 0;
+    sip_ua_on_datagram(&ua, kInvite, strlen(kInvite), ip_of("192.168.1.10"), 52731, 0);
+    CHECK(g_nsent == 2 && g_last_port == 52731 && g_info.state == SIP_CALL_INCOMING);
+    CHECK(sip_ua_answer(&ua, 100) && g_last_port == 52731);
+    g_nsent = 0;
+    sip_ua_hangup(&ua, 5000);
+    CHECK(g_nsent == 1 && strncmp(g_sent[0], "BYE", 3) == 0 && g_last_port == 52731);
+}
+
 int main(void)
 {
     test_g711();
@@ -577,6 +597,7 @@ int main(void)
     test_register();
     test_ua_incoming();
     test_ua_cancel_and_outgoing();
+    test_ua_direct_softphone();
     test_echo_ref();
     printf("voip: %d checks, %d failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;

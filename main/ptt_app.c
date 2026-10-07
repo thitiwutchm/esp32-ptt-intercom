@@ -225,6 +225,11 @@ static void build_view_locked(ui_view_t *v, uint32_t now)
     } else {
         v->mode = UI_MODE_IDLE;
     }
+    uint32_t my_ip, my_bcast;
+    if (wifi_get_addresses(&my_ip, &my_bcast)) {
+        snprintf(v->ip, sizeof(v->ip), "%u.%u.%u.%u", (unsigned)(my_ip & 0xFF), (unsigned)((my_ip >> 8) & 0xFF),
+                 (unsigned)((my_ip >> 16) & 0xFF), (unsigned)(my_ip >> 24));
+    }
     v->channel = s.cfg.channel;
     v->online = ptt_peers_count(&s.peers, s.cfg.channel);
     v->battery = s.battery;
@@ -769,10 +774,7 @@ static sip_action_t call_button_action_locked(uint32_t now)
         set_notice_locked("Walkie-talkie busy", true, now);
         return SIP_ACT_NONE;
     }
-    if (s.sip_reg != SIP_REG_OK) {
-        set_notice_locked("Phone not registered", true, now);
-        return SIP_ACT_NONE;
-    }
+    /* Try even when not registered: a softphone used as the "PBX" accepts calls without it. */
     return SIP_ACT_CALL;
 }
 

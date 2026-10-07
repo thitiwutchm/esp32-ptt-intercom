@@ -39,6 +39,7 @@ typedef struct {
     int online;  /* other devices on this channel */
     int battery; /* -1 unknown */
     char name[PTT_NAME_LEN + 1];
+    char ip[16]; /* our LAN address, empty when offline */
     char talker[PTT_NAME_LEN + 1]; /* RX only */
     char notice[32];               /* short-lived message, empty for none */
     bool notice_warn;              /* show the notice in warning colour */

@@ -394,7 +394,8 @@ void ui_update(const ui_view_t *v)
     }
 
     char info[80];
-    int n = snprintf(info, sizeof(info), "%s  |  %d online", v->name, v->online);
+    /* The address is what people need to call or reach this device, so it wins over the name. */
+    int n = snprintf(info, sizeof(info), "%s  |  %d online", v->ip[0] ? v->ip : v->name, v->online);
     if (v->battery >= 0) {
         n += snprintf(info + n, sizeof(info) - n, "  |  %d%%", v->battery);
     }

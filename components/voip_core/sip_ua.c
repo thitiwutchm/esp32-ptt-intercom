@@ -485,7 +485,11 @@ static void send_bye(sip_ua_t *ua)
     new_branch(ua, branch, sizeof(branch));
     size_t n = build_request(ua, out, sizeof(out), "BYE", dialog_target(ua), branch, from, to, ua->callid,
                              ++ua->local_cseq, NULL, NULL);
-    tx_start(ua, &ua->aux_tx, out, n, ua->cfg.server_ip, ua->cfg.server_port, false, true);
+    /* A call we answered: hang up towards where it came from (a softphone calling us
+     * directly may not listen on the PBX port). Calls we placed go through the PBX. */
+    uint32_t ip = ua->uas ? ua->invite_src_ip : ua->cfg.server_ip;
+    uint16_t port = ua->uas ? ua->invite_src_port : ua->cfg.server_port;
+    tx_start(ua, &ua->aux_tx, out, n, ip, port, false, true);
 }
 
 static void on_invite_response(sip_ua_t *ua, const sip_msg_t *m)
