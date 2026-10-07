@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "captive_dns.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -205,18 +206,23 @@ esp_err_t setup_portal_start(const device_config_t *current, const char *ap_ssid
     }
     s_cb = *cb;
     s_cfg = *current;
+    ESP_LOGI(TAG, "starting: %u bytes internal RAM free (largest block %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     esp_err_t err = wifi_ap_start(ap_ssid, ap_pass);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "access point failed: %s", esp_err_to_name(err));
         return err;
     }
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
+    cfg.stack_size = 6144;
     cfg.max_open_sockets = 6;
     cfg.lru_purge_enable = true;
     cfg.core_id = 0;
     err = httpd_start(&s_http, &cfg);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "web server failed: %s", esp_err_to_name(err));
         wifi_ap_stop();
         return err;
     }
@@ -233,7 +239,9 @@ esp_err_t setup_portal_start(const device_config_t *current, const char *ap_ssid
     httpd_register_err_handler(s_http, HTTPD_404_NOT_FOUND, redirect_404);
 
     s_dns_run = true;
-    xTaskCreatePinnedToCore(dns_task, "dns", 4096, NULL, 4, &s_dns_task, 0);
+    if (xTaskCreatePinnedToCore(dns_task, "dns", 3072, NULL, 4, &s_dns_task, 0) != pdPASS) {
+        ESP_LOGW(TAG, "no DNS task: open http://192.168.4.1 by hand");
+    }
     s_active = true;
     ESP_LOGI(TAG, "setup mode: join \"%s\" and open http://192.168.4.1", ap_ssid);
     return ESP_OK;

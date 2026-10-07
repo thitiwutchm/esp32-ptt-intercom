@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -230,7 +231,11 @@ esp_err_t sip_client_start(const sip_client_cb_t *cb, const device_config_t *cfg
         return ESP_FAIL;
     }
     /* sip_ua keeps several 2 KB messages on the stack in nested handlers. */
-    xTaskCreatePinnedToCore(task, "sip", 16384, NULL, 17, &s_task, 0);
+    /* PSRAM stack: internal RAM is scarce and this task never touches flash. */
+    if (xTaskCreatePinnedToCoreWithCaps(task, "sip", 16384, NULL, 17, &s_task, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the SIP task");
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 

@@ -43,6 +43,7 @@ typedef struct {
     char notice[32];               /* short-lived message, empty for none */
     bool notice_warn;              /* show the notice in warning colour */
     int sip;                       /* -1 SIP disabled, 0 not registered, 1 registered */
+    bool wifi_unset;               /* WIFI: no network configured yet */
     char call_peer[32];            /* CALL_* modes */
     bool call_ringing;             /* CALL_OUT: the other side rings */
     int call_secs;                 /* CALL: duration */

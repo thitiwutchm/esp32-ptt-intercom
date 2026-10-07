@@ -340,7 +340,7 @@ void ui_update(const ui_view_t *v)
     case UI_MODE_WIFI:
         ring = COLOR_RING_WIFI;
         button = COLOR_RING_IDLE;
-        status = "Connecting Wi-Fi...";
+        status = v->wifi_unset ? "No Wi-Fi: hold BOOT 8 s" : "Connecting Wi-Fi...";
         break;
     case UI_MODE_TX:
         ring = button = COLOR_RED;

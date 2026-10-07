@@ -7,6 +7,7 @@
 #include "audio_io.h"
 #include "buttons.h"
 #include "call_audio.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -96,6 +97,7 @@ typedef struct {
     char setup_pass[17];
     uint32_t setup_until_ms;
     bool setup_auto_done;
+    uint32_t setup_retry_ms; /* automatic setup failed: try again at this time */
     uint32_t reboot_at_ms; /* 0 = none */
 
     /* screen */
@@ -202,6 +204,7 @@ static void build_view_locked(ui_view_t *v, uint32_t now)
         }
     } else if (!s.wifi_up) {
         v->mode = UI_MODE_WIFI;
+        v->wifi_unset = s.cfg.wifi_ssid[0] == '\0';
     } else if (in_call_locked()) {
         v->mode = s.call.state == SIP_CALL_INCOMING ? UI_MODE_CALL_IN
                   : s.call.state == SIP_CALL_ACTIVE ? UI_MODE_CALL
@@ -705,6 +708,7 @@ static void setup_enter(uint32_t now)
     if (setup_portal_active()) {
         return;
     }
+    ESP_LOGI(TAG, "phone setup: %u bytes internal RAM free", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     char ssid[33], pass[17];
     snprintf(ssid, sizeof(ssid), "PTT-%04X-Setup", (unsigned)(s.my_id & 0xFFFF));
     snprintf(pass, sizeof(pass), "%08lu", (unsigned long)(esp_random() % 100000000UL));
@@ -712,8 +716,18 @@ static void setup_enter(uint32_t now)
     device_config_t cfg = s.cfg;
     xSemaphoreGive(s.lock);
     const setup_portal_cb_t cb = {.saved = on_setup_saved, .cancelled = on_setup_cancelled};
-    if (setup_portal_start(&cfg, ssid, pass, &cb) != ESP_OK) {
-        ESP_LOGE(TAG, "setup mode failed to start");
+    esp_err_t err = setup_portal_start(&cfg, ssid, pass, &cb);
+    if (err != ESP_OK) {
+        /* Show why on screen (there may be no serial console) and let the app task try again. */
+        char text[32];
+        snprintf(text, sizeof(text), "Setup error %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "%s", text);
+        xSemaphoreTake(s.lock, portMAX_DELAY);
+        set_notice_locked(text, true, now);
+        s.notice_until_ms = now + 5000;
+        s.setup_auto_done = false;
+        s.setup_retry_ms = now + 5000;
+        xSemaphoreGive(s.lock);
         return;
     }
     xSemaphoreTake(s.lock, portMAX_DELAY);
@@ -938,7 +952,7 @@ static void app_task(void *arg)
         xSemaphoreTake(s.lock, portMAX_DELAY);
         bool setup_on = s.setup_active;
         bool have_wifi = s.cfg.wifi_ssid[0] != '\0';
-        bool want_setup = !setup_on && !s.setup_auto_done &&
+        bool want_setup = !setup_on && !s.setup_auto_done && (int32_t)(now - s.setup_retry_ms) >= 0 &&
                           (!have_wifi || (!wifi_ever_connected() && now > SETUP_AUTO_AFTER_MS));
         bool setup_expired = setup_on && have_wifi && (int32_t)(now - s.setup_until_ms) > 0;
         uint32_t reboot_at = s.reboot_at_ms;
@@ -1031,5 +1045,9 @@ esp_err_t ptt_app_start(const board_t *b)
     /* Last: it may open phone setup at once, which needs Wi-Fi running. */
     xTaskCreatePinnedToCore(app_task, "app", 6144, NULL, 5, NULL, 0);
     buttons_start(b, on_button);
+    ESP_LOGI(TAG, "running: %u bytes internal RAM free (largest block %u), %u PSRAM",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return ESP_OK;
 }

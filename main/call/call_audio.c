@@ -140,25 +140,7 @@ esp_err_t call_audio_init(bool hw_ref)
     s_jb_lock = xSemaphoreCreateMutex();
     ptt_jb_init(&s_jb, 3);
 
-    if (s_mode == ECHO_AEC) {
-        s_aec = aec_create(AUDIO_SAMPLE_RATE, 4, 1, AEC_MODE_VOIP_HIGH_PERF);
-        if (!s_aec) {
-            ESP_LOGE(TAG, "AEC create failed: ducking instead");
-            s_mode = ECHO_DUCK;
-        } else {
-            s_chunk = aec_get_chunksize(s_aec);
-            size_t bytes = s_chunk * sizeof(int16_t);
-            s_aec_mic = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
-            s_aec_ref = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
-            s_aec_out = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
-            if (!s_aec_mic || !s_aec_ref || !s_aec_out || s_chunk <= 0 || s_chunk > AEC_MAX_CHUNK) {
-                ESP_LOGE(TAG, "AEC buffers (chunk %d) failed: ducking instead", s_chunk);
-                s_mode = ECHO_DUCK;
-            } else {
-                ESP_LOGI(TAG, "AEC ready, chunk %d samples, %s reference", s_chunk, hw_ref ? "hardware" : "software");
-            }
-        }
-    }
+    /* The AEC itself is created at the first call (aec_ensure): it needs a lot of internal RAM. */
     if (s_mode == ECHO_AEC && !hw_ref) {
         s_ref_buf = heap_caps_malloc(REF_RING * sizeof(int16_t), MALLOC_CAP_SPIRAM);
         s_cal_mic = heap_caps_malloc((CAL_MIC + CAL_EXTRA) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
@@ -174,8 +156,43 @@ esp_err_t call_audio_init(bool hw_ref)
     return ESP_OK;
 }
 
+/* Create the AEC on first use and keep it; false (and ducking from then on) if there is no memory. */
+static bool aec_ensure(void)
+{
+    if (s_aec) {
+        return true;
+    }
+    ESP_LOGI(TAG, "creating AEC, %u bytes internal RAM free", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    aec_handle_t *aec = aec_create(AUDIO_SAMPLE_RATE, 4, 1, AEC_MODE_VOIP_HIGH_PERF);
+    if (!aec) {
+        ESP_LOGE(TAG, "AEC create failed: ducking instead");
+        return false;
+    }
+    int chunk = aec_get_chunksize(aec);
+    size_t bytes = (chunk > 0 ? chunk : 1) * sizeof(int16_t);
+    s_aec_mic = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
+    s_aec_ref = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
+    s_aec_out = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL);
+    if (!s_aec_mic || !s_aec_ref || !s_aec_out || chunk <= 0 || chunk > AEC_MAX_CHUNK) {
+        ESP_LOGE(TAG, "AEC buffers (chunk %d) failed: ducking instead", chunk);
+        aec_destroy(aec);
+        heap_caps_free(s_aec_mic);
+        heap_caps_free(s_aec_ref);
+        heap_caps_free(s_aec_out);
+        s_aec_mic = s_aec_ref = s_aec_out = NULL;
+        return false;
+    }
+    s_chunk = chunk;
+    s_aec = aec;
+    ESP_LOGI(TAG, "AEC ready, chunk %d samples, %s reference", s_chunk, s_hw_ref ? "hardware" : "software");
+    return true;
+}
+
 void call_audio_begin(void)
 {
+    if (s_mode == ECHO_AEC && !aec_ensure()) {
+        s_mode = ECHO_DUCK;
+    }
     xSemaphoreTake(s_jb_lock, portMAX_DELAY);
     ptt_jb_reset(&s_jb);
     xSemaphoreGive(s_jb_lock);
