@@ -92,11 +92,24 @@ const fields = ["name","wifi_ssid","wifi_pass","sip_server","sip_port","sip_user
 function msg(t, bad){ $("msg").textContent = t; $("msg").style.color = bad ? "var(--bad)" : "var(--muted)"; }
 function clearErrors(){ document.querySelectorAll(".err").forEach(e => e.textContent = ""); fields.forEach(f => $(f).classList.remove("bad")); }
 function sipToggle(){ $("sip").hidden = !$("sip_enabled").checked; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+/* The setup network can drop a request (phones probe it, scans pause it): retry a few times. */
+async function getJSON(url, opts, tries = 5){
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(url, Object.assign({cache: "no-store"}, opts || {}));
+      return await r.json();
+    } catch (e) {
+      if (i + 1 >= tries) throw e;
+      await sleep(600 * (i + 1));
+    }
+  }
+}
 $("sip_enabled").addEventListener("change", sipToggle);
 
 async function load(){
   try {
-    const c = await (await fetch("/api/config")).json();
+    const c = await getJSON("/api/config");
     for (const f of fields) if (c[f] !== undefined) $(f).value = c[f];
     $("sip_enabled").checked = c.sip_enabled;
     $("sip_auto_answer").checked = c.sip_auto_answer;
@@ -104,26 +117,39 @@ async function load(){
     $("sip_pass_hint").textContent = c.sip_pass_set ? "รหัส SIP: เว้นว่างไว้ = ใช้รหัสเดิม" : "";
     $("dev").textContent = "เครื่อง " + c.name;
     sipToggle();
-  } catch (e) { msg("โหลดค่าไม่ได้: " + e, true); }
+    msg("");
+    return true;
+  } catch (e) { msg("โหลดค่าไม่ได้ ลองดึงหน้าลงเพื่อรีเฟรช (" + e + ")", true); return false; }
 }
 
-async function scan(){
+function showNetworks(list){
+  const sel = $("wifi_list");
+  sel.innerHTML = '<option value="">— เลือกเครือข่าย (' + list.length + ') —</option>';
+  for (const ap of list) {
+    const o = document.createElement("option");
+    o.value = ap.ssid;
+    const bars = ap.rssi > -55 ? "▂▄▆█" : ap.rssi > -67 ? "▂▄▆" : ap.rssi > -78 ? "▂▄" : "▂";
+    o.textContent = ap.ssid + "  " + bars + (ap.secure ? " 🔒" : "");
+    sel.appendChild(o);
+  }
+}
+
+/* The device scans when setup starts and keeps the list; a rescan runs in the background. */
+async function scan(rescan){
   const sel = $("wifi_list");
   sel.innerHTML = '<option value="">กำลังค้นหา...</option>';
   try {
-    const list = await (await fetch("/api/scan")).json();
-    sel.innerHTML = '<option value="">— เลือกเครือข่าย (' + list.length + ') —</option>';
-    for (const ap of list) {
-      const o = document.createElement("option");
-      o.value = ap.ssid;
-      const bars = ap.rssi > -55 ? "▂▄▆█" : ap.rssi > -67 ? "▂▄▆" : ap.rssi > -78 ? "▂▄" : "▂";
-      o.textContent = ap.ssid + "  " + bars + (ap.secure ? " 🔒" : "");
-      sel.appendChild(o);
+    if (rescan) await getJSON("/api/rescan", {method: "POST"});
+    for (let i = 0; i < 15; i++) {
+      if (rescan || i) await sleep(1500);
+      const r = await getJSON("/api/scan");
+      if (!r.scanning) { showNetworks(r.networks); return; }
     }
-  } catch (e) { sel.innerHTML = '<option value="">ค้นหาไม่ได้ พิมพ์ชื่อเองด้านล่าง</option>'; }
+    throw new Error("timeout");
+  } catch (e) { sel.innerHTML = '<option value="">ค้นหาไม่ได้ พิมพ์ชื่อ Wi-Fi เองด้านล่าง</option>'; }
 }
 $("wifi_list").addEventListener("change", e => { if (e.target.value) { $("wifi_ssid").value = e.target.value; $("wifi_pass").focus(); } });
-$("rescan").addEventListener("click", scan);
+$("rescan").addEventListener("click", () => scan(true));
 
 $("f").addEventListener("submit", async e => {
   e.preventDefault();
@@ -135,7 +161,7 @@ $("f").addEventListener("submit", async e => {
   $("save").disabled = true;
   msg("กำลังบันทึก...");
   try {
-    const r = await (await fetch("/api/config", {method: "POST", body})).json();
+    const r = await getJSON("/api/config", {method: "POST", body}, 3);
     if (r.ok) {
       msg("บันทึกแล้ว เครื่องกำลังรีสตาร์ทและต่อ Wi-Fi \"" + $("wifi_ssid").value + "\" (ปิดหน้านี้ได้)");
       return;
@@ -152,7 +178,7 @@ $("cancel").addEventListener("click", async () => {
   msg("ออกจากโหมดตั้งค่าแล้ว");
 });
 
-load().then(scan);
+load().then(() => scan(false));
 </script>
 </body>
 </html>

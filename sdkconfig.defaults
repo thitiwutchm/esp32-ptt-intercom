@@ -22,6 +22,8 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
 # Internal RAM is tight (LVGL, I2S DMA, AEC, task stacks): Wi-Fi and lwIP buffers go to PSRAM
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Setup web server: phones open many connections at once
+CONFIG_LWIP_MAX_SOCKETS=20
 
 # LVGL
 CONFIG_LV_FONT_MONTSERRAT_14=y

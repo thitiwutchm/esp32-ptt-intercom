@@ -28,6 +28,37 @@ static volatile bool s_dns_run;
 static TaskHandle_t s_dns_task;
 
 #define MAX_BODY 2048
+#define SCAN_MAX 20
+
+/*
+ * Wi-Fi scan results, cached: scanning hops channels and the setup network
+ * goes quiet meanwhile, which breaks the phone's open requests. So scan once
+ * before a phone is likely connected, and rescan only when asked.
+ */
+static wifi_scan_item_t s_scan[SCAN_MAX];
+static int s_scan_n;
+static volatile bool s_scanning;
+
+static void do_scan(void)
+{
+    static wifi_scan_item_t items[SCAN_MAX];
+    s_scanning = true;
+    int n = wifi_scan(items, SCAN_MAX);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memcpy(s_scan, items, sizeof(items));
+    s_scan_n = n;
+    xSemaphoreGive(s_lock);
+    s_scanning = false;
+    ESP_LOGI(TAG, "scan: %d networks", n);
+}
+
+static void scan_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(300)); /* let the HTTP reply go out first */
+    do_scan();
+    vTaskDelete(NULL);
+}
 
 /* ------------------------------------------------------------------ captive DNS */
 
@@ -72,6 +103,8 @@ static esp_err_t send_json(httpd_req_t *req, const char *status, const char *jso
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    /* Phones open many connections to probe for internet; do not keep ours around. */
+    httpd_resp_set_hdr(req, "Connection", "close");
     return httpd_resp_sendstr(req, json);
 }
 
@@ -79,6 +112,7 @@ static esp_err_t page_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Connection", "close");
     return httpd_resp_send(req, setup_page_start, setup_page_end - setup_page_start);
 }
 
@@ -93,20 +127,39 @@ static esp_err_t config_get(httpd_req_t *req)
 
 static esp_err_t scan_get(httpd_req_t *req)
 {
-    static wifi_scan_item_t items[20];
-    int n = wifi_scan(items, 20);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_sendstr_chunk(req, "[");
-    for (int i = 0; i < n; i++) {
-        char ssid[200], line[260];
-        json_escape(items[i].ssid, ssid, sizeof(ssid));
-        snprintf(line, sizeof(line), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"secure\":%s}", i ? "," : "", ssid, items[i].rssi,
-                 items[i].secure ? "true" : "false");
-        httpd_resp_sendstr_chunk(req, line);
+    static wifi_scan_item_t items[SCAN_MAX];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_scan_n;
+    memcpy(items, s_scan, sizeof(items));
+    xSemaphoreGive(s_lock);
+
+    /* {"scanning":false,"networks":[{"ssid":"..","rssi":-50,"secure":true},...]} */
+    char *json = malloc(SCAN_MAX * 260 + 64);
+    if (!json) {
+        return httpd_resp_send_500(req);
     }
-    httpd_resp_sendstr_chunk(req, "]");
-    return httpd_resp_sendstr_chunk(req, NULL);
+    size_t len = (size_t)sprintf(json, "{\"scanning\":%s,\"networks\":[", s_scanning ? "true" : "false");
+    for (int i = 0; i < n; i++) {
+        char ssid[200];
+        json_escape(items[i].ssid, ssid, sizeof(ssid));
+        len += (size_t)sprintf(json + len, "%s{\"ssid\":\"%s\",\"rssi\":%d,\"secure\":%s}", i ? "," : "", ssid,
+                               items[i].rssi, items[i].secure ? "true" : "false");
+    }
+    strcpy(json + len, "]}");
+    esp_err_t r = send_json(req, "200 OK", json);
+    free(json);
+    return r;
+}
+
+static esp_err_t rescan_post(httpd_req_t *req)
+{
+    if (!s_scanning) {
+        s_scanning = true;
+        if (xTaskCreatePinnedToCore(scan_task, "scan", 3072, NULL, 3, NULL, 0) != pdPASS) {
+            s_scanning = false;
+        }
+    }
+    return send_json(req, "200 OK", "{\"ok\":true}");
 }
 
 static esp_err_t config_post(httpd_req_t *req)
@@ -215,9 +268,11 @@ esp_err_t setup_portal_start(const device_config_t *current, const char *ap_ssid
         return err;
     }
 
+    do_scan(); /* ~2 s, before anyone has had time to join */
+
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 6144;
-    cfg.max_open_sockets = 6;
+    cfg.max_open_sockets = 10; /* CONFIG_LWIP_MAX_SOCKETS is raised to 20 for this */
     cfg.lru_purge_enable = true;
     cfg.core_id = 0;
     err = httpd_start(&s_http, &cfg);
@@ -231,6 +286,7 @@ esp_err_t setup_portal_start(const device_config_t *current, const char *ap_ssid
         {.uri = "/api/config", .method = HTTP_GET, .handler = config_get},
         {.uri = "/api/config", .method = HTTP_POST, .handler = config_post},
         {.uri = "/api/scan", .method = HTTP_GET, .handler = scan_get},
+        {.uri = "/api/rescan", .method = HTTP_POST, .handler = rescan_post},
         {.uri = "/api/cancel", .method = HTTP_POST, .handler = cancel_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
