@@ -36,7 +36,7 @@
 
 | สถานะ | ปุ่ม BOOT | จอสัมผัส (EchoEar) |
 |---|---|---|
-| ว่าง | **แตะ** = โทรหาเบอร์ที่ตั้งไว้ (เช่น HA) · **กดค้าง** = พูดวอ | ปุ่ม 📞 ด้านล่าง = โทร · กดค้างปุ่มกลาง = พูดวอ |
+| ว่าง | **แตะ** = โทรหาเบอร์ที่ตั้งไว้ (เช่น HA) · **กดค้าง** = พูดวอ · **ค้าง 8 วินาที** = ตั้งค่าผ่านมือถือ | ปุ่ม 📞 ด้านล่าง = โทร · กดค้างปุ่มกลาง = พูดวอ |
 | มีสายเข้า (เสียงเรียก, ขอบจอสีน้ำเงิน) | **แตะ** = รับสาย · **กดค้าง** = ปฏิเสธ | ปุ่มกลาง = รับ · ปุ่มแดงด้านล่าง = ปฏิเสธ |
 | กำลังโทรออก / กำลังคุย | **แตะ** = วางสาย | ปุ่มกลางหรือปุ่มแดง = วางสาย |
 
@@ -45,6 +45,39 @@
 - สายที่ไม่ได้รับจะขึ้น "Missed: ชื่อ" ค้างไว้ 10 วินาที
 - เปิดตัวเลือก *auto answer* ได้: ถ้า PBX ส่ง header `Call-Info: answer-after=0` มาด้วย เครื่องจะรับสายเองทันที
 
+## ติดตั้งผ่านเว็บ (ไม่ต้องลง ESP-IDF)
+
+1. ดาวน์โหลดไฟล์ factory ของบอร์ด: `esp32-ptt-intercom-echoear-factory.bin` หรือ `esp32-ptt-intercom-cube-factory.bin`
+   จากหน้า **Releases** ของ repo (หรือจาก artifacts ของ GitHub Actions)
+2. เปิด <https://web.esphome.io> ด้วย Chrome หรือ Edge บนคอมพิวเตอร์ ต่อบอร์ดด้วย USB แล้วกด **Connect**
+3. กดไอคอน **⬆ (Install)** แล้วเลือกไฟล์ `.bin` จากข้อ 1 แล้วกด **Install**
+   - **อย่ากด** "Prepare for first use" เพราะปุ่มนั้นจะลงเฟิร์มแวร์ของ ESPHome แทน
+   - **อย่าใช้** ไอคอนตั้ง Wi-Fi ของหน้าเว็บนั้น ให้ตั้งผ่านมือถือตามหัวข้อถัดไปแทน
+4. บอร์ดรีสตาร์ทแล้วเข้าโหมดตั้งค่าผ่านมือถือเอง
+
+ไฟล์ factory เป็นไฟล์เดียวที่รวม bootloader, partition table และแอปไว้แล้ว เขียนที่ตำแหน่ง 0x0
+
+## ตั้งค่า Wi-Fi และ SIP ผ่านมือถือ
+
+ไม่ต้องแก้ค่าในโค้ด บอร์ดจะเข้าโหมดตั้งค่าเองเมื่อ:
+- เปิดเครื่องครั้งแรก (ยังไม่มี Wi-Fi)
+- ต่อ Wi-Fi ไม่ได้เลยภายใน 90 วินาทีหลังเปิดเครื่อง (เช่น รหัสผิด หรือย้ายบ้าน)
+- **กดค้างปุ่ม BOOT 8 วินาที** (เข้าได้ทุกเมื่อ)
+
+ขั้นตอน:
+1. จอจะแสดง **QR code** พร้อมชื่อ Wi-Fi (`PTT-XXXX-Setup`) และรหัสผ่าน 8 หลักที่สุ่มใหม่ทุกครั้ง
+2. สแกน QR ด้วยกล้องมือถือเพื่อต่อ Wi-Fi ของบอร์ด หน้าตั้งค่าจะเด้งขึ้นมาเอง
+   (ถ้าไม่เด้ง ให้เปิด `http://192.168.4.1`)
+3. เลือก Wi-Fi บ้าน ใส่รหัสผ่าน แล้วกรอก SIP: ที่อยู่ PBX, เบอร์ภายใน, รหัสผ่าน, เบอร์ที่จะให้ BOOT โทรไป และ auto answer
+4. กด **บันทึกและรีสตาร์ท** บอร์ดจะเก็บค่าไว้แล้วต่อ Wi-Fi บ้าน
+
+ข้อควรรู้:
+- ถ้าบอร์ดต่อ Wi-Fi บ้านอยู่แล้ว หน้าเดียวกันเปิดจาก IP ของบอร์ดในบ้านได้ด้วย (จอจะแสดงที่อยู่ให้)
+- หน้าตั้งค่าไม่ส่งรหัสผ่านเดิมกลับมาแสดง ถ้าเว้นช่องรหัสว่างไว้ จะใช้รหัสเดิม
+- ออกจากโหมดตั้งค่าโดยไม่บันทึกได้ด้วยการกด BOOT สั้นๆ, กด ✕ บนจอ (EchoEar) หรือกดปุ่มในหน้าเว็บ
+  ถ้าไม่ได้ใช้ 15 นาที โหมดนี้จะปิดเอง
+- ค่าที่ตั้งจากมือถือจะแทนค่าใน menuconfig ทั้งหมด (ค่าใน menuconfig เป็นแค่ค่าเริ่มต้นจากโรงงาน)
+
 ## Build และ Flash
 
 ต้องใช้ [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/) **v5.4 ขึ้นไป** (ทดสอบการคอมไพล์กับ v5.4.2)
@@ -52,7 +85,7 @@
 ```bash
 . $IDF_PATH/export.sh
 
-# 1) ตั้ง Wi-Fi (ต้องเป็น 2.4 GHz) และค่าอื่นๆ: เมนู "PTT Intercom"
+# 1) (ไม่บังคับ) ค่าเริ่มต้นต่างๆ: เมนู "PTT Intercom" ส่วน Wi-Fi และ SIP ตั้งผ่านมือถือได้
 idf.py -B build-echoear -D SDKCONFIG=build-echoear/sdkconfig menuconfig
 
 # 2) EchoEar
@@ -61,6 +94,9 @@ idf.py -B build-echoear -D SDKCONFIG=build-echoear/sdkconfig build flash monitor
 # CUBE
 idf.py -B build-cube -D SDKCONFIG=build-cube/sdkconfig \
        -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cube" build flash monitor
+
+# ไฟล์ factory ไฟล์เดียวสำหรับ web.esphome.io
+cd build-cube && python -m esptool --chip esp32s3 merge_bin -o ../cube-factory.bin @flash_args
 ```
 
 ค่าในเมนู **PTT Intercom**:
@@ -68,7 +104,7 @@ idf.py -B build-cube -D SDKCONFIG=build-cube/sdkconfig \
 | ตัวเลือก | ค่าเริ่มต้น | หมายเหตุ |
 |---|---|---|
 | Board | EchoEar | หรือ CUBE |
-| Wi-Fi SSID / password | – | **ต้องตั้ง** |
+| Wi-Fi SSID / password | ว่าง | ว่าง = ตั้งผ่านมือถือ |
 | UDP port | 47000 | ทุกเครื่องต้องตรงกัน |
 | Channel / volume on first boot | 1 / 70 | |
 | Voice codec | IMA ADPCM 64 kbit/s | หรือ PCM16 256 kbit/s ฝั่งรับถอดได้ทั้งสองแบบ |
@@ -184,6 +220,8 @@ components/voip_core/     SIP/RTP แบบ C ล้วน ทดสอบบน
 main/
   ptt_app.c      รวมทุกอย่าง: task ส่งเสียง / เล่นเสียง / ปุ่ม / HELLO / สถานะสาย
   call/          sip_client (socket + task) และ call_audio (AEC, jitter, G.711)
+  setup/         โหมดตั้งค่าผ่านมือถือ: Wi-Fi AP, captive DNS, หน้าเว็บ (setup_page.html)
+components/setup_core/    ตรวจค่าจากฟอร์ม, JSON, ตอบ DNS ของ captive portal (C ล้วน ทดสอบบน PC)
   board/         ขา GPIO, จอ, ทัช, แบต ของแต่ละบอร์ด
   audio/         I2S + ES8311/ES7210 (esp_codec_dev) หรือ I2S ธรรมดา, เสียง beep
   net/           Wi-Fi station, UDP socket
@@ -222,7 +260,7 @@ header 18 ไบต์ little-endian: `'P' 'T'`, version, type, device_id(4), ta
 ## ทดสอบ
 
 ```bash
-make -C test/host        # unit test ของ ptt_core และ voip_core + ตรวจว่า tools/ptt_peer.py ตรงกับโค้ด C ทุกไบต์
+make -C test/host        # unit test ของ ptt_core, voip_core, setup_core + ตรวจว่า tools/ptt_peer.py ตรงกับโค้ด C ทุกไบต์
 test/asterisk/run.sh     # เปิด Asterisk จริง (apt install asterisk) แล้วลอง SIP ทุกกรณี
 ```
 
@@ -236,7 +274,6 @@ test/asterisk/run.sh     # เปิด Asterisk จริง (apt install aster
   แต่ **ยังไม่ได้ทดสอบบนฮาร์ดแวร์จริง** โดยเฉพาะคุณภาพของ AEC บน CUBE ที่ต้องลองกับเครื่องจริงเท่านั้น
   ถ้าเจอปัญหา ให้ดู log ผ่าน `idf.py monitor` ก่อน
 - SIP ใช้ UDP ในวง LAN เท่านั้น ยังไม่รองรับ TLS/SRTP, NAT, DTMF และ codec G.722
-- ตั้ง Wi-Fi ผ่าน menuconfig อย่างเดียว (ยังไม่มีการตั้งผ่านมือถือ)
 - ยังไม่มี Opus: ADPCM ใช้แบนด์วิดท์ 64 kbit/s ต่อผู้ฟังหนึ่งคน ซึ่งพอสำหรับ LAN
 - UI เป็นภาษาอังกฤษ เพราะฟอนต์ในตัวของ LVGL ไม่มีอักษรไทย
 - ไม่มีการเข้ารหัส: ใครอยู่ใน LAN เดียวกันก็ฟังได้

@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -33,6 +34,10 @@ static lv_obj_t *s_info;
 static lv_obj_t *s_call_btn;
 static lv_obj_t *s_call_btn_label;
 static ui_mode_t s_mode; /* last shown, read by the touch handlers (LVGL task) */
+static lv_obj_t *s_setup;  /* full-screen overlay for phone setup */
+static lv_obj_t *s_setup_qr;
+static lv_obj_t *s_setup_text;
+static char s_setup_shown[96];
 
 /*
  * Touch input. The CST816 sleeps when nobody touches it and then NACKs I2C,
@@ -150,6 +155,47 @@ static lv_obj_t *small_button(lv_obj_t *parent, const char *symbol, ui_event_t e
     lv_obj_center(label);
     lv_obj_add_event_cb(btn, click_event, LV_EVENT_CLICKED, (void *)(intptr_t)ev);
     return btn;
+}
+
+static void build_setup(const board_t *b)
+{
+    const int w = b->width;
+    const int h = b->height;
+    const bool big = w >= 300;
+    s_setup = lv_obj_create(lv_screen_active());
+    lv_obj_remove_style_all(s_setup);
+    lv_obj_set_size(s_setup, w, h);
+    lv_obj_set_style_bg_color(s_setup, lv_color_hex(COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(s_setup, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_setup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_setup);
+    lv_obj_set_style_text_font(title, big ? &lv_font_montserrat_20 : &lv_font_montserrat_14, 0);
+    lv_label_set_text(title, "Phone setup: scan to join");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, b->round ? h * 11 / 100 : 6);
+
+    int qr = big ? 150 : 118;
+    s_setup_qr = lv_qrcode_create(s_setup);
+    lv_qrcode_set_size(s_setup_qr, qr);
+    lv_qrcode_set_dark_color(s_setup_qr, lv_color_black());
+    lv_qrcode_set_light_color(s_setup_qr, lv_color_white());
+    /* A white border keeps the code readable on the dark background. */
+    lv_obj_set_style_border_color(s_setup_qr, lv_color_white(), 0);
+    lv_obj_set_style_border_width(s_setup_qr, 5, 0);
+    lv_obj_align(s_setup_qr, LV_ALIGN_TOP_MID, 0, b->round ? h * 19 / 100 : 30);
+
+    s_setup_text = lv_label_create(s_setup);
+    lv_obj_set_style_text_font(s_setup_text, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(s_setup_text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_setup_text, w * 80 / 100);
+    lv_label_set_long_mode(s_setup_text, LV_LABEL_LONG_WRAP);
+    lv_obj_align_to(s_setup_text, s_setup_qr, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+
+    if (s_touch) {
+        lv_obj_t *x = small_button(s_setup, LV_SYMBOL_CLOSE, UI_EV_SETUP_EXIT, big ? 40 : 30);
+        lv_obj_align(x, LV_ALIGN_BOTTOM_MID, 0, b->round ? -h * 5 / 100 : -4);
+    }
+    lv_obj_add_flag(s_setup, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void build(const board_t *b)
@@ -276,6 +322,7 @@ esp_err_t ui_init(const board_t *b, ui_event_cb_t cb)
 
     lvgl_port_lock(0);
     build(b);
+    build_setup(b);
     lvgl_port_unlock();
     return ESP_OK;
 }
@@ -359,6 +406,29 @@ void ui_update(const ui_view_t *v)
         return;
     }
     s_mode = v->mode;
+    if (v->mode == UI_MODE_SETUP) {
+        /* Standard Wi-Fi QR: phone cameras offer to join the network. */
+        char qr[96];
+        snprintf(qr, sizeof(qr), "WIFI:T:WPA;S:%s;P:%s;;", v->setup_ssid, v->setup_pass);
+        if (strcmp(qr, s_setup_shown) != 0) {
+            lv_qrcode_update(s_setup_qr, qr, strlen(qr));
+            strlcpy(s_setup_shown, qr, sizeof(s_setup_shown));
+        }
+        char text[200];
+        int n = snprintf(text, sizeof(text), "Wi-Fi %s\nPassword %s\nthen open http://192.168.4.1", v->setup_ssid,
+                         v->setup_pass);
+        if (v->setup_lan_ip[0]) {
+            snprintf(text + n, sizeof(text) - n, "\nor http://%s", v->setup_lan_ip);
+        }
+        if (v->notice[0]) {
+            snprintf(text, sizeof(text), "%s", v->notice);
+        }
+        lv_label_set_text(s_setup_text, text);
+        lv_obj_clear_flag(s_setup, LV_OBJ_FLAG_HIDDEN);
+        lvgl_port_unlock();
+        return;
+    }
+    lv_obj_add_flag(s_setup, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_border_color(s_ring, lv_color_hex(ring), 0);
     lv_obj_set_style_bg_color(s_ptt, lv_color_hex(button), 0);
     lv_label_set_text(s_ptt_label, center);

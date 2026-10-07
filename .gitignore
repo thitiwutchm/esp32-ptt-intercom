@@ -8,3 +8,4 @@ __pycache__/
 libptt_core.so
 build-*/
 test/host/test_voip
+test/host/test_setup

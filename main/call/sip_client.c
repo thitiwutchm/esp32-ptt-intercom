@@ -19,6 +19,8 @@
 static const char *TAG = "sip";
 
 static sip_client_cb_t s_cb;
+static device_config_t s_cfg;
+static bool s_enabled;
 static SemaphoreHandle_t s_lock; /* recursive: sip_ua callbacks run with it held */
 static sip_ua_t s_ua;
 static bool s_ua_ready;
@@ -118,7 +120,7 @@ static bool resolve_server(uint32_t *ip)
 {
     struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_DGRAM};
     struct addrinfo *res = NULL;
-    if (getaddrinfo(CONFIG_PTT_SIP_SERVER, NULL, &hints, &res) != 0 || !res) {
+    if (getaddrinfo(s_cfg.sip_server, NULL, &hints, &res) != 0 || !res) {
         return false;
     }
     *ip = ((struct sockaddr_in *)res->ai_addr)->sin_addr.s_addr;
@@ -131,26 +133,26 @@ static void setup_ua(void)
 {
     uint32_t server;
     if (!resolve_server(&server)) {
-        ESP_LOGW(TAG, "cannot resolve \"%s\", retrying", CONFIG_PTT_SIP_SERVER);
+        ESP_LOGW(TAG, "cannot resolve \"%s\", retrying", s_cfg.sip_server);
         return;
     }
     sip_ua_cfg_t cfg = {
         .server_ip = server,
-        .server_port = CONFIG_PTT_SIP_PORT,
+        .server_port = s_cfg.sip_port,
         .local_ip = s_local_ip,
         .local_port = CONFIG_PTT_SIP_LOCAL_PORT,
         .rtp_port = CONFIG_PTT_SIP_RTP_PORT,
         .expires = 300,
     };
-    strlcpy(cfg.domain, CONFIG_PTT_SIP_SERVER, sizeof(cfg.domain));
-    strlcpy(cfg.user, CONFIG_PTT_SIP_USER, sizeof(cfg.user));
-    strlcpy(cfg.password, CONFIG_PTT_SIP_PASSWORD, sizeof(cfg.password));
-    strlcpy(cfg.display, CONFIG_PTT_SIP_DISPLAY, sizeof(cfg.display));
+    strlcpy(cfg.domain, s_cfg.sip_server, sizeof(cfg.domain));
+    strlcpy(cfg.user, s_cfg.sip_user, sizeof(cfg.user));
+    strlcpy(cfg.password, s_cfg.sip_pass, sizeof(cfg.password));
+    strlcpy(cfg.display, s_cfg.sip_display[0] ? s_cfg.sip_display : s_cfg.name, sizeof(cfg.display));
     sip_ua_ops_t ops = {.send = op_send, .reg_changed = op_reg, .call_changed = op_call, .is_busy = op_busy,
                         .random = op_rand};
     sip_ua_init(&s_ua, &cfg, &ops, now_ms());
     s_ua_ready = true;
-    ESP_LOGI(TAG, "registering %s@%s", CONFIG_PTT_SIP_USER, CONFIG_PTT_SIP_SERVER);
+    ESP_LOGI(TAG, "registering %s@%s", s_cfg.sip_user, s_cfg.sip_server);
     sip_ua_register(&s_ua, now_ms());
 }
 
@@ -211,10 +213,16 @@ static void task(void *arg)
     }
 }
 
-esp_err_t sip_client_start(const sip_client_cb_t *cb)
+esp_err_t sip_client_start(const sip_client_cb_t *cb, const device_config_t *cfg)
 {
     s_cb = *cb;
+    s_cfg = *cfg;
     s_lock = xSemaphoreCreateRecursiveMutex();
+    if (!cfg->sip_enabled) {
+        ESP_LOGI(TAG, "SIP off");
+        return ESP_OK;
+    }
+    s_enabled = true;
     s_sip_sock = udp_socket(CONFIG_PTT_SIP_LOCAL_PORT);
     s_rtp_sock = udp_socket(CONFIG_PTT_SIP_RTP_PORT);
     if (s_sip_sock < 0 || s_rtp_sock < 0) {
@@ -228,6 +236,9 @@ esp_err_t sip_client_start(const sip_client_cb_t *cb)
 
 void sip_client_network_up(uint32_t local_ip)
 {
+    if (!s_enabled) {
+        return;
+    }
     xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
     if (local_ip != s_local_ip || !s_ua_ready) {
         if (s_ua_ready && s_ua.info.state != SIP_CALL_IDLE) {
@@ -310,9 +321,10 @@ void sip_client_send_audio(const int16_t *pcm8k, int samples)
 
 #else /* !CONFIG_PTT_SIP_ENABLE */
 
-esp_err_t sip_client_start(const sip_client_cb_t *cb)
+esp_err_t sip_client_start(const sip_client_cb_t *cb, const device_config_t *cfg)
 {
     (void)cb;
+    (void)cfg;
     return ESP_OK;
 }
 void sip_client_network_up(uint32_t local_ip)

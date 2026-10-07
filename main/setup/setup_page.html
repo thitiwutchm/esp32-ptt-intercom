@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ตั้งค่าอินเตอร์คอม</title>
+<style>
+:root{--bg:#0e1116;--card:#171b22;--line:#2a313c;--text:#f2f4f7;--muted:#9aa4b2;--accent:#2d6cdf;--bad:#e5484d;--ok:#2e9e4f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:8px 0 4px}
+p.sub{color:var(--muted);margin:0 0 16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+h2{font-size:17px;margin:0 0 12px}
+label{display:block;font-size:14px;color:var(--muted);margin:12px 0 4px}
+input,select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#0b0e12;color:var(--text);font-size:16px}
+input:focus,select:focus{outline:2px solid var(--accent);border-color:transparent}
+.row{display:flex;gap:8px}.row>*{flex:1}
+.check{display:flex;align-items:center;gap:10px;margin-top:12px;color:var(--text);font-size:15px}
+.check input{width:22px;height:22px;flex:none}
+button{width:100%;padding:14px;border:0;border-radius:12px;background:var(--accent);color:#fff;font-size:17px;font-weight:600}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--text);font-weight:500;padding:10px;font-size:15px}
+.err{color:var(--bad);font-size:14px;margin-top:4px;min-height:0}
+.bad{border-color:var(--bad)!important}
+#msg{text-align:center;margin:12px 0;min-height:24px}
+.hint{color:var(--muted);font-size:13px;margin-top:4px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>ตั้งค่าอินเตอร์คอม</h1>
+<p class="sub" id="dev">กำลังโหลด...</p>
+<form id="f" novalidate>
+<section>
+<h2>Wi-Fi (2.4 GHz)</h2>
+<label for="wifi_list">เครือข่าย</label>
+<div class="row">
+<select id="wifi_list"><option value="">กำลังค้นหา...</option></select>
+</div>
+<button type="button" class="ghost" id="rescan" style="margin-top:8px">ค้นหาอีกครั้ง</button>
+<label for="wifi_ssid">ชื่อ Wi-Fi (SSID)</label>
+<input id="wifi_ssid" name="wifi_ssid" maxlength="32" autocomplete="off" autocapitalize="none">
+<div class="err" data-for="wifi_ssid"></div>
+<label for="wifi_pass">รหัสผ่าน Wi-Fi</label>
+<input id="wifi_pass" name="wifi_pass" type="password" maxlength="64" autocomplete="new-password">
+<div class="hint" id="wifi_pass_hint"></div>
+<div class="err" data-for="wifi_pass"></div>
+</section>
+
+<section>
+<h2>เครื่องนี้</h2>
+<label for="name">ชื่อเครื่อง (ภาษาอังกฤษ ไม่เกิน 16 ตัว)</label>
+<input id="name" name="name" maxlength="16" autocomplete="off">
+<div class="err" data-for="name"></div>
+</section>
+
+<section>
+<h2>โทรศัพท์ SIP (Asterisk / Home Assistant)</h2>
+<label class="check"><input type="checkbox" id="sip_enabled"> ใช้งาน SIP</label>
+<div id="sip">
+<div class="row">
+<div><label for="sip_server">ที่อยู่ PBX</label><input id="sip_server" name="sip_server" maxlength="63" placeholder="192.168.1.10" autocapitalize="none" inputmode="url"></div>
+<div style="flex:0 0 96px"><label for="sip_port">พอร์ต</label><input id="sip_port" name="sip_port" inputmode="numeric" maxlength="5"></div>
+</div>
+<div class="err" data-for="sip_server"></div><div class="err" data-for="sip_port"></div>
+<div class="row">
+<div><label for="sip_user">เบอร์ภายใน</label><input id="sip_user" name="sip_user" maxlength="31" inputmode="numeric" autocapitalize="none"></div>
+<div><label for="sip_pass">รหัสผ่าน SIP</label><input id="sip_pass" name="sip_pass" type="password" maxlength="63" autocomplete="new-password"></div>
+</div>
+<div class="hint" id="sip_pass_hint"></div>
+<div class="err" data-for="sip_user"></div><div class="err" data-for="sip_pass"></div>
+<label for="sip_display">ชื่อที่ปลายสายเห็น (ภาษาอังกฤษ)</label>
+<input id="sip_display" name="sip_display" maxlength="31">
+<div class="err" data-for="sip_display"></div>
+<label for="sip_target">เบอร์ที่ปุ่ม BOOT โทรไป (เช่น HA)</label>
+<input id="sip_target" name="sip_target" maxlength="31" inputmode="numeric" autocapitalize="none">
+<div class="err" data-for="sip_target"></div>
+<label class="check"><input type="checkbox" id="sip_auto_answer"> รับสายเองเมื่อ PBX ขอ (auto answer)</label>
+</div>
+</section>
+
+<button type="submit" id="save">บันทึกและรีสตาร์ท</button>
+<div id="msg"></div>
+<button type="button" class="ghost" id="cancel">ออกโดยไม่บันทึก</button>
+</form>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fields = ["name","wifi_ssid","wifi_pass","sip_server","sip_port","sip_user","sip_pass","sip_display","sip_target"];
+function msg(t, bad){ $("msg").textContent = t; $("msg").style.color = bad ? "var(--bad)" : "var(--muted)"; }
+function clearErrors(){ document.querySelectorAll(".err").forEach(e => e.textContent = ""); fields.forEach(f => $(f).classList.remove("bad")); }
+function sipToggle(){ $("sip").hidden = !$("sip_enabled").checked; }
+$("sip_enabled").addEventListener("change", sipToggle);
+
+async function load(){
+  try {
+    const c = await (await fetch("/api/config")).json();
+    for (const f of fields) if (c[f] !== undefined) $(f).value = c[f];
+    $("sip_enabled").checked = c.sip_enabled;
+    $("sip_auto_answer").checked = c.sip_auto_answer;
+    $("wifi_pass_hint").textContent = c.wifi_pass_set ? "เว้นว่างไว้ = ใช้รหัสเดิม" : "";
+    $("sip_pass_hint").textContent = c.sip_pass_set ? "รหัส SIP: เว้นว่างไว้ = ใช้รหัสเดิม" : "";
+    $("dev").textContent = "เครื่อง " + c.name;
+    sipToggle();
+  } catch (e) { msg("โหลดค่าไม่ได้: " + e, true); }
+}
+
+async function scan(){
+  const sel = $("wifi_list");
+  sel.innerHTML = '<option value="">กำลังค้นหา...</option>';
+  try {
+    const list = await (await fetch("/api/scan")).json();
+    sel.innerHTML = '<option value="">— เลือกเครือข่าย (' + list.length + ') —</option>';
+    for (const ap of list) {
+      const o = document.createElement("option");
+      o.value = ap.ssid;
+      const bars = ap.rssi > -55 ? "▂▄▆█" : ap.rssi > -67 ? "▂▄▆" : ap.rssi > -78 ? "▂▄" : "▂";
+      o.textContent = ap.ssid + "  " + bars + (ap.secure ? " 🔒" : "");
+      sel.appendChild(o);
+    }
+  } catch (e) { sel.innerHTML = '<option value="">ค้นหาไม่ได้ พิมพ์ชื่อเองด้านล่าง</option>'; }
+}
+$("wifi_list").addEventListener("change", e => { if (e.target.value) { $("wifi_ssid").value = e.target.value; $("wifi_pass").focus(); } });
+$("rescan").addEventListener("click", scan);
+
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  clearErrors();
+  const body = new URLSearchParams();
+  for (const f of fields) body.set(f, $(f).value.trim());
+  body.set("sip_enabled", $("sip_enabled").checked ? "1" : "0");
+  body.set("sip_auto_answer", $("sip_auto_answer").checked ? "1" : "0");
+  $("save").disabled = true;
+  msg("กำลังบันทึก...");
+  try {
+    const r = await (await fetch("/api/config", {method: "POST", body})).json();
+    if (r.ok) {
+      msg("บันทึกแล้ว เครื่องกำลังรีสตาร์ทและต่อ Wi-Fi \"" + $("wifi_ssid").value + "\" (ปิดหน้านี้ได้)");
+      return;
+    }
+    const el = document.querySelector('.err[data-for="' + r.field + '"]');
+    if (el) { el.textContent = r.error; $(r.field).classList.add("bad"); $(r.field).focus(); }
+    msg("ยังบันทึกไม่ได้: " + r.error, true);
+  } catch (err) { msg("ส่งไม่สำเร็จ: " + err, true); }
+  $("save").disabled = false;
+});
+
+$("cancel").addEventListener("click", async () => {
+  try { await fetch("/api/cancel", {method: "POST"}); } catch (e) {}
+  msg("ออกจากโหมดตั้งค่าแล้ว");
+});
+
+load().then(scan);
+</script>
+</body>
+</html>

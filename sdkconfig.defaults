@@ -31,3 +31,6 @@ CONFIG_LV_USE_CLIB_MALLOC=y
 
 # CST816 (EchoEar touch) may be asleep at boot with no reset line: do not fail init on the ID read
 CONFIG_ESP_LCD_TOUCH_CST816S_DISABLE_READ_ID=y
+
+# QR code on the phone setup screen
+CONFIG_LV_USE_QRCODE=y

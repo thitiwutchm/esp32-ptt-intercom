@@ -2,7 +2,12 @@ name: build
 
 on:
   push:
+    tags: ["v*"]
+    branches: ["**"]
   pull_request:
+
+permissions:
+  contents: write # publish factory images on version tags
 
 jobs:
   host-tests:
@@ -38,11 +43,23 @@ jobs:
           if [ "${{ matrix.board }}" = cube ]; then defaults="sdkconfig.defaults;sdkconfig.defaults.cube"; fi
           idf.py -B build-${{ matrix.board }} -D SDKCONFIG=build-${{ matrix.board }}/sdkconfig \
                  -D SDKCONFIG_DEFAULTS="$defaults" build
+      - name: Factory image (one file at 0x0, for web.esphome.io / ESP Web Tools)
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          cd build-${{ matrix.board }}
+          python -m esptool --chip esp32s3 merge_bin -o ../esp32-ptt-intercom-${{ matrix.board }}-factory.bin @flash_args
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.board }}
           path: |
+            esp32-ptt-intercom-${{ matrix.board }}-factory.bin
             build-${{ matrix.board }}/bootloader/bootloader.bin
             build-${{ matrix.board }}/partition_table/partition-table.bin
             build-${{ matrix.board }}/esp32-ptt-intercom.bin
             build-${{ matrix.board }}/flash_args
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: esp32-ptt-intercom-${{ matrix.board }}-factory.bin

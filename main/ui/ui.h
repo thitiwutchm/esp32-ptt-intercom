@@ -18,6 +18,7 @@ typedef enum {
     UI_MODE_CALL_IN,  /* phone call ringing here */
     UI_MODE_CALL_OUT, /* we are calling */
     UI_MODE_CALL,     /* in a phone call */
+    UI_MODE_SETUP,    /* phone setup: QR code for the setup network */
 } ui_mode_t;
 
 typedef enum {
@@ -29,6 +30,7 @@ typedef enum {
     UI_EV_VOL_DOWN,
     UI_EV_CALL,   /* call / answer / hang up, whichever fits */
     UI_EV_REJECT, /* decline a ringing call */
+    UI_EV_SETUP_EXIT, /* leave phone setup without saving */
 } ui_event_t;
 
 typedef struct {
@@ -44,6 +46,9 @@ typedef struct {
     char call_peer[32];            /* CALL_* modes */
     bool call_ringing;             /* CALL_OUT: the other side rings */
     int call_secs;                 /* CALL: duration */
+    char setup_ssid[33];           /* SETUP: network to join */
+    char setup_pass[17];
+    char setup_lan_ip[16];         /* SETUP: page also on this LAN address, empty if offline */
 } ui_view_t;
 
 /* Called from the LVGL task. Must not block: post to a queue. */

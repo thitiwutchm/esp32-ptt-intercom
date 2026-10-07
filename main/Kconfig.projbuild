@@ -14,12 +14,17 @@ menu "PTT Intercom"
     endchoice
 
     config PTT_WIFI_SSID
-        string "Wi-Fi SSID (2.4 GHz)"
-        default "myssid"
+        string "Wi-Fi SSID (2.4 GHz), empty = set up from a phone"
+        default ""
+        help
+            Leave empty to configure Wi-Fi and SIP from a phone: the device
+            opens a setup network and shows a QR code. Settings saved from
+            the phone replace everything here. Hold BOOT for 8 s to open
+            phone setup again.
 
     config PTT_WIFI_PASSWORD
         string "Wi-Fi password"
-        default "mypassword"
+        default ""
 
     config PTT_UDP_PORT
         int "UDP port"
@@ -72,7 +77,7 @@ menu "PTT Intercom"
         help
             Smaller shifts mean more gain. 16 is the raw 24-bit mic level.
 
-    menu "SIP intercom (Asterisk / Home Assistant)"
+    menu "SIP intercom (Asterisk / Home Assistant), defaults for phone setup"
 
         config PTT_SIP_ENABLE
             bool "Register to a SIP PBX for calls"

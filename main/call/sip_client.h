@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "device_config.h"
 #include "esp_err.h"
 #include "sip_ua.h"
 
@@ -18,7 +19,8 @@ typedef struct {
     void (*rtp_frame)(uint16_t seq, int pt, const uint8_t *payload, size_t len); /* received audio */
 } sip_client_cb_t;
 
-esp_err_t sip_client_start(const sip_client_cb_t *cb);
+/* Uses the SIP fields of cfg; does nothing when cfg->sip_enabled is false. */
+esp_err_t sip_client_start(const sip_client_cb_t *cb, const device_config_t *cfg);
 
 /* Wi-Fi got an address: (re)register from it. */
 void sip_client_network_up(uint32_t local_ip);

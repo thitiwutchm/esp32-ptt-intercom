@@ -7,6 +7,7 @@
 #define DEBOUNCE_POLLS 3
 #define LONG_PRESS_MS 800
 #define LONG_PRESS_PTT_MS 350 /* BOOT: tap = call, hold = talk; keep the hold short */
+#define VERY_LONG_MS 8000
 
 typedef struct {
     board_button_t btn;
@@ -14,6 +15,7 @@ typedef struct {
     int stable; /* polls the raw level has disagreed with `pressed` */
     TickType_t since;
     bool long_sent;
+    bool very_long_sent;
 } button_state_t;
 
 static button_state_t s_state[BOARD_MAX_BUTTONS];
@@ -35,6 +37,7 @@ static void task(void *arg)
                     if (raw) {
                         b->since = now;
                         b->long_sent = false;
+                        b->very_long_sent = false;
                         s_cb(b->btn.role, BUTTON_PRESS);
                     } else {
                         s_cb(b->btn.role, BUTTON_RELEASE);
@@ -49,6 +52,10 @@ static void task(void *arg)
                 if (b->pressed && !b->long_sent && now - b->since >= pdMS_TO_TICKS(long_ms)) {
                     b->long_sent = true;
                     s_cb(b->btn.role, BUTTON_LONG_PRESS);
+                }
+                if (b->pressed && !b->very_long_sent && now - b->since >= pdMS_TO_TICKS(VERY_LONG_MS)) {
+                    b->very_long_sent = true;
+                    s_cb(b->btn.role, BUTTON_VERY_LONG);
                 }
             }
         }

@@ -8,6 +8,7 @@ typedef enum {
     BUTTON_RELEASE,
     BUTTON_CLICK,      /* released before the long-press time */
     BUTTON_LONG_PRESS, /* held for the long-press time; no CLICK follows */
+    BUTTON_VERY_LONG,  /* still held after 8 s (BOOT: phone setup) */
 } button_event_t;
 
 typedef void (*button_cb_t)(board_button_role_t role, button_event_t ev);

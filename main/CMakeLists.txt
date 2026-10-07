@@ -14,10 +14,14 @@ idf_component_register(
         "ui/ui.c"
         "call/sip_client.c"
         "call/call_audio.c"
-    INCLUDE_DIRS "." "board" "audio" "net" "ui" "call"
+        "setup/setup_portal.c"
+    INCLUDE_DIRS "." "board" "audio" "net" "ui" "call" "setup"
+    EMBED_TXTFILES "setup/setup_page.html"
     REQUIRES
         ptt_core
         voip_core
+        setup_core
+        esp_http_server
         nvs_flash
         esp_wifi
         esp_netif

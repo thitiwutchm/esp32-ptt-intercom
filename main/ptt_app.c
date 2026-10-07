@@ -1,5 +1,6 @@
 #include "ptt_app.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -9,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -22,6 +24,7 @@
 #include "ptt_proto.h"
 #include "sdkconfig.h"
 #include "settings.h"
+#include "setup_portal.h"
 #include "sip_client.h"
 #include "tones.h"
 #include "ui.h"
@@ -42,13 +45,18 @@ static const char *TAG = "ptt";
 #define APP_EV_BOOT_LONG 101    /* BOOT held */
 #define APP_EV_BOOT_RELEASE 102 /* BOOT let go after a hold */
 #define APP_EV_AUTO_ANSWER 103  /* the PBX asked us to answer at once */
+#define APP_EV_BOOT_VERY_LONG 104 /* BOOT held 8 s: phone setup */
+#define APP_EV_SETUP_SAVED 105  /* the setup page saved new settings */
+#define APP_EV_SETUP_CANCEL 106 /* the setup page was left without saving */
+
+#define SETUP_AUTO_AFTER_MS 90000      /* never connected this long after boot: open setup */
+#define SETUP_TIMEOUT_MS (15 * 60000)  /* close an unused setup network */
+#define REBOOT_DELAY_MS 1500
 
 #if CONFIG_PTT_SIP_ENABLE
-#define SIP_ENABLED 1
-#define SIP_CALL_TARGET CONFIG_PTT_SIP_CALL_TARGET
+#define SIP_BUILT 1
 #else
-#define SIP_ENABLED 0
-#define SIP_CALL_TARGET ""
+#define SIP_BUILT 0
 #endif
 
 #if CONFIG_PTT_CODEC_PCM16
@@ -82,6 +90,14 @@ typedef struct {
     uint32_t call_start_ms;
     bool boot_ptt; /* walkie-talkie held with BOOT */
 
+    /* phone setup */
+    bool setup_active;
+    char setup_ssid[33];
+    char setup_pass[17];
+    uint32_t setup_until_ms;
+    bool setup_auto_done;
+    uint32_t reboot_at_ms; /* 0 = none */
+
     /* screen */
     char notice[32];
     bool notice_warn;
@@ -91,6 +107,13 @@ typedef struct {
 } app_t;
 
 static app_t s;
+static device_config_t s_saved_cfg; /* from the setup page, applied by the app task */
+
+/* SIP is compiled in and switched on in the settings (fixed until the next reboot). */
+static bool sip_on(void)
+{
+    return SIP_BUILT && s.cfg.sip_enabled;
+}
 static QueueHandle_t s_events;
 static TaskHandle_t s_rx_task;
 
@@ -167,8 +190,17 @@ static bool in_call_locked(void)
 static void build_view_locked(ui_view_t *v, uint32_t now)
 {
     memset(v, 0, sizeof(*v));
-    v->sip = SIP_ENABLED ? (s.sip_reg == SIP_REG_OK) : -1;
-    if (!s.wifi_up) {
+    v->sip = sip_on() ? (s.sip_reg == SIP_REG_OK) : -1;
+    if (s.setup_active && !in_call_locked()) {
+        v->mode = UI_MODE_SETUP;
+        strlcpy(v->setup_ssid, s.setup_ssid, sizeof(v->setup_ssid));
+        strlcpy(v->setup_pass, s.setup_pass, sizeof(v->setup_pass));
+        uint32_t ip, bcast;
+        if (wifi_get_addresses(&ip, &bcast)) {
+            snprintf(v->setup_lan_ip, sizeof(v->setup_lan_ip), "%u.%u.%u.%u", (unsigned)(ip & 0xFF),
+                     (unsigned)((ip >> 8) & 0xFF), (unsigned)((ip >> 16) & 0xFF), (unsigned)(ip >> 24));
+        }
+    } else if (!s.wifi_up) {
         v->mode = UI_MODE_WIFI;
     } else if (in_call_locked()) {
         v->mode = s.call.state == SIP_CALL_INCOMING ? UI_MODE_CALL_IN
@@ -539,7 +571,9 @@ static void on_button(board_button_role_t role, button_event_t ev)
 {
     switch (role) {
     case BOARD_BTN_PTT:
-        if (!SIP_ENABLED) {
+        if (ev == BUTTON_VERY_LONG) {
+            post_app_event(APP_EV_BOOT_VERY_LONG);
+        } else if (!sip_on()) {
             /* Walkie-talkie only: talk from the moment the button goes down. */
             if (ev == BUTTON_PRESS) {
                 post_event(UI_EV_PTT_DOWN);
@@ -625,15 +659,12 @@ static void on_sip_call(const sip_call_info_t *info)
             break;
         }
     }
-    bool auto_answer = info->state == SIP_CALL_INCOMING && prev != SIP_CALL_INCOMING && info->auto_answer;
+    bool auto_answer = info->state == SIP_CALL_INCOMING && prev != SIP_CALL_INCOMING && info->auto_answer &&
+                       s.cfg.sip_auto_answer;
     xSemaphoreGive(s.lock);
-#if CONFIG_PTT_SIP_ENABLE && CONFIG_PTT_SIP_AUTO_ANSWER
     if (auto_answer) {
         post_app_event(APP_EV_AUTO_ANSWER);
     }
-#else
-    (void)auto_answer;
-#endif
     apply_effects(&fx);
 }
 
@@ -654,6 +685,54 @@ static bool sip_is_busy(void)
     return busy;
 }
 
+/* ------------------------------------------------------------------ phone setup */
+
+/* HTTP task: only hand over to the app task (stopping the portal from its own handler would deadlock). */
+static void on_setup_saved(const device_config_t *cfg)
+{
+    s_saved_cfg = *cfg;
+    post_app_event(APP_EV_SETUP_SAVED);
+}
+
+static void on_setup_cancelled(void)
+{
+    post_app_event(APP_EV_SETUP_CANCEL);
+}
+
+/* App task, without s.lock. */
+static void setup_enter(uint32_t now)
+{
+    if (setup_portal_active()) {
+        return;
+    }
+    char ssid[33], pass[17];
+    snprintf(ssid, sizeof(ssid), "PTT-%04X-Setup", (unsigned)(s.my_id & 0xFFFF));
+    snprintf(pass, sizeof(pass), "%08lu", (unsigned long)(esp_random() % 100000000UL));
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    device_config_t cfg = s.cfg;
+    xSemaphoreGive(s.lock);
+    const setup_portal_cb_t cb = {.saved = on_setup_saved, .cancelled = on_setup_cancelled};
+    if (setup_portal_start(&cfg, ssid, pass, &cb) != ESP_OK) {
+        ESP_LOGE(TAG, "setup mode failed to start");
+        return;
+    }
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    s.setup_active = true;
+    strlcpy(s.setup_ssid, ssid, sizeof(s.setup_ssid));
+    strlcpy(s.setup_pass, pass, sizeof(s.setup_pass));
+    s.setup_until_ms = now + SETUP_TIMEOUT_MS;
+    s.last_activity_ms = now;
+    xSemaphoreGive(s.lock);
+}
+
+static void setup_leave(void)
+{
+    setup_portal_stop();
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    s.setup_active = false;
+    xSemaphoreGive(s.lock);
+}
+
 typedef enum { SIP_ACT_NONE, SIP_ACT_CALL, SIP_ACT_ANSWER, SIP_ACT_HANGUP } sip_action_t;
 
 /* What a tap on BOOT or the phone button means right now. */
@@ -669,7 +748,7 @@ static sip_action_t call_button_action_locked(uint32_t now)
     case SIP_CALL_IDLE:
         break;
     }
-    if (!SIP_ENABLED) {
+    if (!sip_on()) {
         return SIP_ACT_NONE;
     }
     if (s.floor.state != PTT_FLOOR_IDLE) {
@@ -688,11 +767,41 @@ static void handle_input(ui_event_t ev, uint32_t now, effects_t *fx, bool *hello
     char text[32];
     bool save = false;
     sip_action_t sip_action = SIP_ACT_NONE;
+    enum { SETUP_NONE, SETUP_ENTER, SETUP_LEAVE } setup_action = SETUP_NONE;
 
     xSemaphoreTake(s.lock, portMAX_DELAY);
     s.last_activity_ms = now;
     fx->ui = true;
+    /* In setup mode BOOT (or the X on screen) leaves it, if there is a network to go back to. */
+    if (s.setup_active && ((int)ev == APP_EV_BOOT_CLICK || (int)ev == UI_EV_SETUP_EXIT ||
+                           (int)ev == APP_EV_SETUP_CANCEL)) {
+        if (s.cfg.wifi_ssid[0]) {
+            setup_action = SETUP_LEAVE;
+        } else {
+            set_notice_locked("Set up Wi-Fi first", true, now);
+        }
+        ev = (ui_event_t)-1;
+    }
     switch ((int)ev) {
+    case APP_EV_BOOT_VERY_LONG:
+        if (in_call_locked()) {
+            break;
+        }
+        if (s.floor.state == PTT_FLOOR_TX) {
+            handle_floor_event_locked(ptt_floor_release(&s.floor, now), now, fx);
+        }
+        s.boot_ptt = false;
+        setup_action = SETUP_ENTER;
+        break;
+    case APP_EV_SETUP_SAVED:
+        /* Keep what changed on the device meanwhile; take Wi-Fi, SIP and name from the page. */
+        s_saved_cfg.channel = s.cfg.channel;
+        s_saved_cfg.volume = s.cfg.volume;
+        settings_save_all(&s_saved_cfg);
+        set_notice_locked("Saved - restarting", false, now);
+        s.notice_until_ms = now + REBOOT_DELAY_MS + 1000;
+        s.reboot_at_ms = now + REBOOT_DELAY_MS;
+        break;
     case UI_EV_CALL:
     case APP_EV_BOOT_CLICK:
         sip_action = call_button_action_locked(now);
@@ -771,7 +880,7 @@ static void handle_input(ui_event_t ev, uint32_t now, effects_t *fx, bool *hello
     /* SIP calls take the SIP lock, whose callbacks take ours: never call them with s.lock held. */
     switch (sip_action) {
     case SIP_ACT_CALL:
-        if (!sip_client_call(SIP_CALL_TARGET)) {
+        if (!sip_client_call(s.cfg.sip_target)) {
             xSemaphoreTake(s.lock, portMAX_DELAY);
             set_notice_locked("Cannot call now", true, now);
             xSemaphoreGive(s.lock);
@@ -785,6 +894,11 @@ static void handle_input(ui_event_t ev, uint32_t now, effects_t *fx, bool *hello
         break;
     case SIP_ACT_NONE:
         break;
+    }
+    if (setup_action == SETUP_ENTER) {
+        setup_enter(now);
+    } else if (setup_action == SETUP_LEAVE) {
+        setup_leave();
     }
 }
 
@@ -819,6 +933,35 @@ static void app_task(void *arg)
         if (call_active && now - last_call_tick >= 1000) {
             last_call_tick = now; /* call timer */
             fx.ui = true;
+        }
+
+        xSemaphoreTake(s.lock, portMAX_DELAY);
+        bool setup_on = s.setup_active;
+        bool have_wifi = s.cfg.wifi_ssid[0] != '\0';
+        bool want_setup = !setup_on && !s.setup_auto_done &&
+                          (!have_wifi || (!wifi_ever_connected() && now > SETUP_AUTO_AFTER_MS));
+        bool setup_expired = setup_on && have_wifi && (int32_t)(now - s.setup_until_ms) > 0;
+        uint32_t reboot_at = s.reboot_at_ms;
+        if (want_setup) {
+            s.setup_auto_done = true; /* only once per boot; BOOT 8 s opens it again */
+        }
+        xSemaphoreGive(s.lock);
+        if (want_setup) {
+            if (have_wifi) {
+                ESP_LOGW(TAG, "Wi-Fi not reachable: opening phone setup");
+            } else {
+                ESP_LOGW(TAG, "no Wi-Fi yet: opening phone setup");
+            }
+            setup_enter(now);
+            fx.ui = true;
+        } else if (setup_expired) {
+            setup_leave();
+            fx.ui = true;
+        }
+        if (reboot_at && (int32_t)(now - reboot_at) >= 0) {
+            apply_effects(&fx);
+            ESP_LOGI(TAG, "restarting with the new settings");
+            esp_restart();
         }
 
         if (active == s.dimmed) {
@@ -868,10 +1011,15 @@ esp_err_t ptt_app_start(const board_t *b)
 
     xTaskCreatePinnedToCore(audio_rx_task, "audio_rx", 6144, NULL, 19, &s_rx_task, 1);
     xTaskCreatePinnedToCore(audio_tx_task, "audio_tx", 6144, NULL, 20, NULL, 1);
-    xTaskCreatePinnedToCore(app_task, "app", 6144, NULL, 5, NULL, 0);
 
     ESP_ERROR_CHECK(call_audio_init(audio_io_has_hw_ref()));
-    ESP_ERROR_CHECK(wifi_start(s.cfg.name, on_wifi));
+    /* DHCP host names allow letters, digits and '-' only. */
+    char hostname[sizeof(s.cfg.name)];
+    for (size_t i = 0; i < sizeof(hostname); i++) {
+        char c = s.cfg.name[i];
+        hostname[i] = (c == '\0' || isalnum((unsigned char)c)) ? c : '-';
+    }
+    ESP_ERROR_CHECK(wifi_start(hostname, s.cfg.wifi_ssid, s.cfg.wifi_pass, on_wifi));
     ESP_ERROR_CHECK(ptt_net_start(CONFIG_PTT_UDP_PORT, on_packet));
     const sip_client_cb_t sip_cb = {
         .call_changed = on_sip_call,
@@ -879,7 +1027,9 @@ esp_err_t ptt_app_start(const board_t *b)
         .is_busy = sip_is_busy,
         .rtp_frame = call_audio_rtp_in,
     };
-    ESP_ERROR_CHECK(sip_client_start(&sip_cb));
+    ESP_ERROR_CHECK(sip_client_start(&sip_cb, &s.cfg));
+    /* Last: it may open phone setup at once, which needs Wi-Fi running. */
+    xTaskCreatePinnedToCore(app_task, "app", 6144, NULL, 5, NULL, 0);
     buttons_start(b, on_button);
     return ESP_OK;
 }
