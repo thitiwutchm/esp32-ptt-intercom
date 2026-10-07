@@ -30,6 +30,9 @@ static lv_obj_t *s_ptt;
 static lv_obj_t *s_ptt_label;
 static lv_obj_t *s_status;
 static lv_obj_t *s_info;
+static lv_obj_t *s_call_btn;
+static lv_obj_t *s_call_btn_label;
+static ui_mode_t s_mode; /* last shown, read by the touch handlers (LVGL task) */
 
 /*
  * Touch input. The CST816 sleeps when nobody touches it and then NACKs I2C,
@@ -99,9 +102,21 @@ static void add_touch(const board_t *b, lv_display_t *disp)
     lvgl_port_unlock();
 }
 
+static bool in_call_mode(void)
+{
+    return s_mode == UI_MODE_CALL_IN || s_mode == UI_MODE_CALL_OUT || s_mode == UI_MODE_CALL;
+}
+
+/* Centre button: hold to talk on the walkie-talkie; during a phone call a tap answers or hangs up. */
 static void ptt_event(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
+    if (in_call_mode()) {
+        if (code == LV_EVENT_CLICKED) {
+            s_cb(UI_EV_CALL);
+        }
+        return;
+    }
     if (code == LV_EVENT_PRESSED) {
         s_cb(UI_EV_PTT_DOWN);
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
@@ -112,6 +127,13 @@ static void ptt_event(lv_event_t *e)
 static void click_event(lv_event_t *e)
 {
     s_cb((ui_event_t)(intptr_t)lv_event_get_user_data(e));
+}
+
+/* Phone button: call when idle, decline while ringing, hang up otherwise. */
+static void call_btn_event(lv_event_t *e)
+{
+    (void)e;
+    s_cb(s_mode == UI_MODE_CALL_IN ? UI_EV_REJECT : UI_EV_CALL);
 }
 
 static lv_obj_t *small_button(lv_obj_t *parent, const char *symbol, ui_event_t ev, int size)
@@ -206,6 +228,20 @@ static void build(const board_t *b)
         lv_obj_align(minus, LV_ALIGN_BOTTOM_MID, -w * 22 / 100, b->round ? -h * 19 / 100 : -h * 12 / 100);
         lv_obj_t *plus = small_button(scr, LV_SYMBOL_PLUS, UI_EV_VOL_UP, sz);
         lv_obj_align(plus, LV_ALIGN_BOTTOM_MID, w * 22 / 100, b->round ? -h * 19 / 100 : -h * 12 / 100);
+
+        s_call_btn = lv_button_create(scr);
+        lv_obj_set_size(s_call_btn, sz + 8, sz + 8);
+        lv_obj_set_style_radius(s_call_btn, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_shadow_width(s_call_btn, 0, 0);
+        lv_obj_set_ext_click_area(s_call_btn, sz / 3);
+        lv_obj_align(s_call_btn, LV_ALIGN_BOTTOM_MID, 0, b->round ? -h * 18 / 100 : -h * 11 / 100);
+        s_call_btn_label = lv_label_create(s_call_btn);
+        lv_label_set_text(s_call_btn_label, LV_SYMBOL_CALL);
+        lv_obj_center(s_call_btn_label);
+        lv_obj_add_event_cb(s_call_btn, call_btn_event, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_flag(s_call_btn, LV_OBJ_FLAG_HIDDEN);
+        /* Info line moves below the button row. */
+        lv_obj_align(s_info, LV_ALIGN_BOTTOM_MID, 0, b->round ? -h * 8 / 100 : -h * 3 / 100);
     }
 }
 
@@ -248,8 +284,10 @@ void ui_update(const ui_view_t *v)
 {
     uint32_t ring = COLOR_RING_IDLE;
     uint32_t button = COLOR_BLUE;
+    uint32_t call_btn = COLOR_GREEN;
+    const char *center = "PTT";
     const char *status;
-    char buf[48];
+    char buf[64];
 
     switch (v->mode) {
     case UI_MODE_WIFI:
@@ -263,12 +301,41 @@ void ui_update(const ui_view_t *v)
         break;
     case UI_MODE_RX:
         ring = button = COLOR_GREEN;
+        center = LV_SYMBOL_VOLUME_MAX;
         snprintf(buf, sizeof(buf), LV_SYMBOL_VOLUME_MAX " %s", v->talker);
+        status = buf;
+        break;
+    case UI_MODE_CALL_IN:
+        ring = COLOR_BLUE;
+        button = COLOR_GREEN;
+        call_btn = COLOR_RED;
+        center = LV_SYMBOL_CALL;
+        snprintf(buf, sizeof(buf), "%s calling", v->call_peer);
+        status = buf;
+        break;
+    case UI_MODE_CALL_OUT:
+        ring = COLOR_BLUE;
+        button = call_btn = COLOR_RED;
+        center = LV_SYMBOL_CLOSE;
+        snprintf(buf, sizeof(buf), "%s %s...", v->call_ringing ? "Ringing" : "Calling", v->call_peer);
+        status = buf;
+        break;
+    case UI_MODE_CALL:
+        ring = COLOR_GREEN;
+        button = call_btn = COLOR_RED;
+        center = LV_SYMBOL_CLOSE;
+        snprintf(buf, sizeof(buf), "%s  %d:%02d", v->call_peer, v->call_secs / 60, v->call_secs % 60);
         status = buf;
         break;
     case UI_MODE_IDLE:
     default:
-        status = s_touch ? "Hold to talk" : "Hold BOOT to talk";
+        if (s_touch) {
+            status = "Hold to talk";
+        } else if (v->sip >= 0) {
+            status = "BOOT: tap = call, hold = talk";
+        } else {
+            status = "Hold BOOT to talk";
+        }
         break;
     }
     bool warn = v->notice[0] && v->notice_warn;
@@ -279,22 +346,34 @@ void ui_update(const ui_view_t *v)
         ring = COLOR_ORANGE;
     }
 
-    char info[64];
+    char info[80];
+    int n = snprintf(info, sizeof(info), "%s  |  %d online", v->name, v->online);
     if (v->battery >= 0) {
-        snprintf(info, sizeof(info), "%s  |  %d online  |  %d%%", v->name, v->online, v->battery);
-    } else {
-        snprintf(info, sizeof(info), "%s  |  %d online", v->name, v->online);
+        n += snprintf(info + n, sizeof(info) - n, "  |  %d%%", v->battery);
+    }
+    if (v->sip >= 0) {
+        snprintf(info + n, sizeof(info) - n, "  |  " LV_SYMBOL_CALL "%s", v->sip ? "" : " !");
     }
 
     if (!lvgl_port_lock(100)) {
         return;
     }
+    s_mode = v->mode;
     lv_obj_set_style_border_color(s_ring, lv_color_hex(ring), 0);
     lv_obj_set_style_bg_color(s_ptt, lv_color_hex(button), 0);
-    lv_label_set_text(s_ptt_label, v->mode == UI_MODE_RX ? LV_SYMBOL_VOLUME_MAX : "PTT");
+    lv_label_set_text(s_ptt_label, center);
     lv_label_set_text_fmt(s_channel, "CH %d", v->channel);
     lv_label_set_text(s_status, status);
     lv_obj_set_style_text_color(s_status, lv_color_hex(warn ? COLOR_ORANGE : COLOR_TEXT), 0);
     lv_label_set_text(s_info, info);
+    if (s_call_btn) {
+        if (v->sip < 0 || v->mode == UI_MODE_WIFI || v->mode == UI_MODE_TX || v->mode == UI_MODE_RX) {
+            lv_obj_add_flag(s_call_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_call_btn, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(s_call_btn, lv_color_hex(call_btn), 0);
+            lv_label_set_text(s_call_btn_label, v->mode == UI_MODE_CALL_IN ? LV_SYMBOL_CLOSE : LV_SYMBOL_CALL);
+        }
+    }
     lvgl_port_unlock();
 }

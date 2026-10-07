@@ -1,7 +1,11 @@
 # ESP32 PTT Intercom
 
-วิทยุสื่อสารแบบ **Push-to-Talk** ผ่าน Wi-Fi วง LAN เดียวกัน สำหรับบอร์ด ESP32-S3 (N16R8)
-กดค้างเพื่อพูด ปล่อยเพื่อฟัง ใช้ได้โดยไม่ต้องต่ออินเทอร์เน็ต ไม่ต้องมีเซิร์ฟเวอร์
+อินเตอร์คอมบนโต๊ะสำหรับบอร์ด ESP32-S3 (N16R8) ทำได้ 2 อย่างในเครื่องเดียว:
+
+1. **วอ Push-to-Talk ในวง LAN:** กดค้างเพื่อพูด ปล่อยเพื่อฟัง ไม่ต้องมีเซิร์ฟเวอร์
+2. **โทรศัพท์ SIP ผ่าน Asterisk:** เป็นเบอร์ภายในของ PBX โทรเข้าออกกับ Home Assistant dashboard ได้
+   (ผ่าน [SIP Core](https://github.com/TECH7Fox/sipcore-hass-integration)) กดรับแล้วคุยพร้อมกันสองทาง
+   ไม่ต้องกดพูด มีตัวตัดเสียงสะท้อน (AEC)
 
 | บอร์ด | จอ | เสียง | ปุ่มพูด |
 |---|---|---|---|
@@ -27,6 +31,19 @@
 | ระดับเสียง | แตะ − + ด้านล่าง | กด VOL+ / VOL− |
 
 ช่องและระดับเสียงที่ตั้งไว้ถูกจำไว้ใน NVS ข้ามการรีบูต
+
+### โทรศัพท์ (SIP)
+
+| สถานะ | ปุ่ม BOOT | จอสัมผัส (EchoEar) |
+|---|---|---|
+| ว่าง | **แตะ** = โทรหาเบอร์ที่ตั้งไว้ (เช่น HA) · **กดค้าง** = พูดวอ | ปุ่ม 📞 ด้านล่าง = โทร · กดค้างปุ่มกลาง = พูดวอ |
+| มีสายเข้า (เสียงเรียก, ขอบจอสีน้ำเงิน) | **แตะ** = รับสาย · **กดค้าง** = ปฏิเสธ | ปุ่มกลาง = รับ · ปุ่มแดงด้านล่าง = ปฏิเสธ |
+| กำลังโทรออก / กำลังคุย | **แตะ** = วางสาย | ปุ่มกลางหรือปุ่มแดง = วางสาย |
+
+- ระหว่างคุย ขอบจอเป็นสีเขียว และจอแสดงชื่อปลายสายกับเวลาที่คุย
+- ระหว่างคุยไม่รับสัญญาณวอ และระหว่างใช้วอ สายที่โทรเข้ามาจะได้สัญญาณไม่ว่าง (486)
+- สายที่ไม่ได้รับจะขึ้น "Missed: ชื่อ" ค้างไว้ 10 วินาที
+- เปิดตัวเลือก *auto answer* ได้: ถ้า PBX ส่ง header `Call-Info: answer-after=0` มาด้วย เครื่องจะรับสายเองทันที
 
 ## Build และ Flash
 
@@ -58,6 +75,18 @@ idf.py -B build-cube -D SDKCONFIG=build-cube/sdkconfig \
 | Jitter buffer prefill | 3 เฟรม (60 ms) | เพิ่มถ้าเสียงกระตุกบนเครือข่ายที่ช้า |
 | Mic gain (EchoEar) / Mic shift (CUBE) | 30 dB / 12 | ปรับถ้าเสียงเบาหรือแตก |
 
+เมนูย่อย **SIP intercom (Asterisk / Home Assistant)**:
+
+| ตัวเลือก | ค่าเริ่มต้น | หมายเหตุ |
+|---|---|---|
+| Register to a SIP PBX | เปิด | ปิดแล้วจะเหลือแค่วอ และ BOOT กลับไปเป็นปุ่มพูดทันทีที่กด |
+| PBX address | 192.168.1.10 | IP ของ Asterisk (เช่น เครื่องที่รัน HA) ชื่อแบบ `.local` ใช้ไม่ได้ |
+| Extension / Password | 200 / – | ต้องตรงกับที่ตั้งใน Asterisk |
+| Caller name | Desk | ชื่อที่ปลายสายเห็น |
+| Number BOOT calls | 100 | เบอร์ของ HA dashboard หรือ ring group |
+| Auto answer | ปิด | เปิดแล้วรับเองเมื่อ PBX ขอ |
+| Echo handling | AEC | หรือ Ducking (ลดเสียงไมค์ตอนปลายสายพูด) หรือ None |
+
 GitHub Actions คอมไพล์ทั้งสองบอร์ดและแนบไฟล์ `.bin` ไว้ใน artifacts ของทุก build
 
 **เราเตอร์:** ต้องปิด *AP / Client isolation* (มักเปิดไว้ใน Guest Wi-Fi) ไม่งั้นเครื่องจะมองไม่เห็นกัน
@@ -79,6 +108,64 @@ python3 tools/ptt_peer.py talk voice.wav --to 192.168.1.42
 
 ถ้า broadcast ไม่ผ่าน ให้ใส่ `--broadcast 192.168.1.255` (ใช้ subnet ของคุณ)
 
+## ตั้งค่า Asterisk และ Home Assistant
+
+```
+HA Dashboard (SIP Core, เบอร์ 100) ◄─ WebRTC ─► Asterisk ◄─ SIP UDP 5060 + RTP G.711 ─► CUBE / EchoEar (เบอร์ 200)
+```
+
+Asterisk แปลงเสียงระหว่าง WebRTC (Opus แบบเข้ารหัส) ของเบราว์เซอร์ กับ G.711 แบบ RTP ธรรมดาของบอร์ดให้เอง
+
+**1. เพิ่มบอร์ดเป็นเบอร์ใน Asterisk** (`pjsip.conf`, ถ้าใช้ Asterisk add-on ของ HA ให้ใส่ในไฟล์ config เพิ่มเติมตามเอกสารของ add-on)
+
+```ini
+[200]
+type=endpoint
+context=default          ; context เดียวกับเบอร์ของ HA
+disallow=all
+allow=ulaw,alaw
+auth=200-auth
+aors=200
+direct_media=no
+rtp_symmetric=yes
+callerid="Desk" <200>
+
+[200-auth]
+type=auth
+auth_type=userpass
+username=200
+password=ตั้งรหัสที่นี่
+
+[200]
+type=aor
+max_contacts=1
+remove_existing=yes
+qualify_frequency=30
+```
+
+**2. dialplan** (`extensions.conf`) ให้โทรหาบอร์ดได้ ถ้าอยากให้บอร์ดรับเองทันที ให้ใส่ header auto-answer แบบนี้
+แล้วเปิดตัวเลือก *Auto answer* ในบอร์ดด้วย:
+
+```ini
+exten => 200,1,Dial(PJSIP/200,30,b(autoanswer^s^1))
+[autoanswer]
+exten => s,1,Set(PJSIP_HEADER(add,Call-Info)=<sip:pbx>\;answer-after=0)
+ same => n,Return()
+```
+
+**3. Home Assistant:** ติดตั้ง SIP Core ผ่าน HACS แล้วเพิ่มการ์ด `sip-contacts-card` ที่มีรายชื่อเบอร์ 200
+HA ต้องเปิดผ่าน **HTTPS** เพราะเบราว์เซอร์ไม่ให้ใช้ไมค์บนหน้าเว็บที่ไม่ใช่ HTTPS ส่วนตอนบอร์ดโทรเข้า HA
+ต้องมีคนเปิดหน้า dashboard หรือแอปไว้ถึงจะดัง
+
+### เสียงสะท้อน (AEC)
+
+- **EchoEar:** ES7210 อัดเสียงที่ส่งออกลำโพงกลับเข้ามาให้ (สัญญาณอ้างอิงจากฮาร์ดแวร์) AEC ของ ESP-SR จึงตัดเสียงสะท้อนได้ตรงจุด
+- **CUBE:** ไมค์กับลำโพงใช้ I2S คนละพอร์ต ไม่มีสัญญาณอ้างอิงจากฮาร์ดแวร์ เฟิร์มแวร์จึงจำเสียงที่เล่นไว้เองเป็นสัญญาณอ้างอิง
+  ตอนต่อสายติดจะเล่นเสียงกวาดความถี่สั้นๆ (ราว 0.3 วินาที) เพื่อวัดว่าเสียงจากลำโพงใช้เวลากี่ ms ถึงไมค์
+  ระหว่างวัด ปลายสายจะไม่ได้ยินเสียงประมาณ 1 วินาที ถ้าวัดไม่สำเร็จ สายนั้นจะใช้โหมดลดเสียงไมค์ (ducking) แทน
+  ดู log `echo path ... ms, confidence ...` ใน `idf.py monitor`
+- **ถ้ายังมีเสียงสะท้อน:** ลดระดับเสียงลำโพง ลด gain ไมค์ (Mic shift ให้มากขึ้น) และใส่โฟมกั้นระหว่างลำโพงกับไมค์ในกล่อง
+
 ## โครงสร้าง
 
 ```
@@ -88,8 +175,15 @@ components/ptt_core/      ตรรกะล้วน (ไม่พึ่ง ESP
   ptt_peers      ตารางเครื่องที่ออนไลน์ (จาก HELLO)
   ptt_jitter     jitter buffer เรียงเฟรมตาม seq, รายงานเฟรมหาย, ตัด latency หลัง Wi-Fi สะดุด
   ptt_adpcm      IMA ADPCM 4:1 แต่ละเฟรมถอดได้ด้วยตัวเอง
+components/voip_core/     SIP/RTP แบบ C ล้วน ทดสอบบน PC และกับ Asterisk จริงได้
+  sip_ua         SIP UA: REGISTER (digest), โทรเข้า/ออก, CANCEL, BYE, re-INVITE, OPTIONS
+  sip_msg, sdp   แยก message SIP และ SDP
+  rtp, g711      RTP + G.711 µ-law / A-law
+  resample       แปลง 16 kHz <-> 8 kHz
+  echo_ref       สัญญาณอ้างอิงจากซอฟต์แวร์ + หา delay ด้วย cross-correlation
 main/
-  ptt_app.c      รวมทุกอย่าง: task ส่งเสียง / เล่นเสียง / ปุ่ม / HELLO
+  ptt_app.c      รวมทุกอย่าง: task ส่งเสียง / เล่นเสียง / ปุ่ม / HELLO / สถานะสาย
+  call/          sip_client (socket + task) และ call_audio (AEC, jitter, G.711)
   board/         ขา GPIO, จอ, ทัช, แบต ของแต่ละบอร์ด
   audio/         I2S + ES8311/ES7210 (esp_codec_dev) หรือ I2S ธรรมดา, เสียง beep
   net/           Wi-Fi station, UDP socket
@@ -105,6 +199,8 @@ test/host/                unit test (make -C test/host)
 | 1 | `audio_tx` | 20 | อ่านไมค์ทุก 20 ms → encode → unicast ไปทุกเครื่องในช่อง |
 | 1 | `audio_rx` | 19 | jitter buffer → decode → ลำโพง (เปิดแอมป์เฉพาะตอนเล่น) |
 | 0 | `net_rx` | 18 | รับ UDP → floor control → jitter buffer |
+| 0 | `sip` | 17 | SIP + RTP: สถานะสาย, retransmit, ต่ออายุการลงทะเบียน |
+| 0 | `echo_cal` | 3 | หา delay ลำโพง→ไมค์ ตอนเริ่มสาย (CUBE) |
 | 0 | `app` | 5 | ปุ่ม/ทัช, timeout, HELLO ทุก 2 วินาที, แบต, อัปเดตจอ |
 
 ### โปรโตคอล (UDP พอร์ตเดียว)
@@ -126,13 +222,20 @@ header 18 ไบต์ little-endian: `'P' 'T'`, version, type, device_id(4), ta
 ## ทดสอบ
 
 ```bash
-make -C test/host     # unit test ของ ptt_core + ตรวจว่า tools/ptt_peer.py ตรงกับโค้ด C ทุกไบต์
+make -C test/host        # unit test ของ ptt_core และ voip_core + ตรวจว่า tools/ptt_peer.py ตรงกับโค้ด C ทุกไบต์
+test/asterisk/run.sh     # เปิด Asterisk จริง (apt install asterisk) แล้วลอง SIP ทุกกรณี
 ```
+
+`test/asterisk/run.sh` รันโค้ด SIP ชุดเดียวกับในบอร์ดกับ Asterisk 20 จริง ครอบคลุม:
+ลงทะเบียนพร้อม digest auth, โทรไปเบอร์ echo แล้วเช็กว่าเสียง 1 kHz ที่ส่งไปกลับมา,
+สายไม่ว่าง (486), ปลายสายวางเอง, สายเข้าพร้อม header auto-answer, ผู้โทรยกเลิกก่อนรับ และการปฏิเสธสาย
 
 ## สถานะและสิ่งที่ยังไม่ได้ทำ
 
-- โค้ดนี้คอมไพล์ผ่านทั้งสองบอร์ด และ unit test ผ่าน แต่ **ยังไม่ได้ทดสอบบนฮาร์ดแวร์จริง**
+- โค้ดนี้คอมไพล์ผ่านทั้งสองบอร์ด unit test ผ่าน และส่วน SIP ผ่านการทดสอบกับ Asterisk จริงแล้ว
+  แต่ **ยังไม่ได้ทดสอบบนฮาร์ดแวร์จริง** โดยเฉพาะคุณภาพของ AEC บน CUBE ที่ต้องลองกับเครื่องจริงเท่านั้น
   ถ้าเจอปัญหา ให้ดู log ผ่าน `idf.py monitor` ก่อน
+- SIP ใช้ UDP ในวง LAN เท่านั้น ยังไม่รองรับ TLS/SRTP, NAT, DTMF และ codec G.722
 - ตั้ง Wi-Fi ผ่าน menuconfig อย่างเดียว (ยังไม่มีการตั้งผ่านมือถือ)
 - ยังไม่มี Opus: ADPCM ใช้แบนด์วิดท์ 64 kbit/s ต่อผู้ฟังหนึ่งคน ซึ่งพอสำหรับ LAN
 - UI เป็นภาษาอังกฤษ เพราะฟอนต์ในตัวของ LVGL ไม่มีอักษรไทย

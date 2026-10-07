@@ -72,4 +72,88 @@ menu "PTT Intercom"
         help
             Smaller shifts mean more gain. 16 is the raw 24-bit mic level.
 
+    menu "SIP intercom (Asterisk / Home Assistant)"
+
+        config PTT_SIP_ENABLE
+            bool "Register to a SIP PBX for calls"
+            default y
+            help
+                The device becomes an extension of the PBX: it can be called
+                (for example from a Home Assistant dashboard through SIP Core)
+                and BOOT calls PTT_SIP_CALL_TARGET. Calls are full duplex
+                with echo cancellation.
+
+        config PTT_SIP_SERVER
+            string "PBX address (IPv4 recommended)"
+            default "192.168.1.10"
+            depends on PTT_SIP_ENABLE
+            help
+                Address of Asterisk, e.g. the Home Assistant host running the
+                Asterisk add-on. Host names need DNS; ".local" names do not
+                resolve.
+
+        config PTT_SIP_PORT
+            int "PBX SIP port (UDP)"
+            default 5060
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_USER
+            string "Extension / user name"
+            default "200"
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_PASSWORD
+            string "Password"
+            default ""
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_DISPLAY
+            string "Caller name shown to others"
+            default "Desk"
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_CALL_TARGET
+            string "Number BOOT calls (e.g. the Home Assistant extension or a ring group)"
+            default "100"
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_AUTO_ANSWER
+            bool "Answer at once when the PBX asks for it (Call-Info answer-after)"
+            default n
+            depends on PTT_SIP_ENABLE
+            help
+                Off: every call rings and is answered with a press. On: calls
+                that carry the auto-answer header open the line immediately,
+                like a classic intercom.
+
+        config PTT_SIP_LOCAL_PORT
+            int "Local SIP port"
+            default 5060
+            depends on PTT_SIP_ENABLE
+
+        config PTT_SIP_RTP_PORT
+            int "Local RTP port"
+            default 40000
+            depends on PTT_SIP_ENABLE
+
+        choice PTT_ECHO
+            prompt "Echo handling during calls"
+            default PTT_ECHO_AEC
+            depends on PTT_SIP_ENABLE
+
+            config PTT_ECHO_AEC
+                bool "Acoustic echo cancellation (ESP-SR), full duplex"
+                help
+                    EchoEar uses the ES7210 hardware reference. Boards without
+                    one (CUBE) use the played audio as a software reference,
+                    aligned by a chirp at the start of every call; if that
+                    measurement fails the call falls back to ducking.
+            config PTT_ECHO_DUCK
+                bool "Ducking: lower the mic while the far end talks"
+            config PTT_ECHO_NONE
+                bool "None"
+        endchoice
+
+    endmenu
+
 endmenu

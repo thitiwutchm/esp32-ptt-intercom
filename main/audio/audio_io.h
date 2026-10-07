@@ -27,6 +27,13 @@ esp_err_t audio_io_init(const board_t *b);
 /* Fill pcm with exactly `samples` samples. Returns samples read, 0 on error. */
 int audio_io_read(int16_t *pcm, int samples);
 
+/*
+ * Same, plus the hardware echo reference (what the speaker is playing, as
+ * the ES7210 hears it) when the board has one; zeros otherwise.
+ */
+int audio_io_read_ref(int16_t *pcm, int16_t *ref, int samples);
+bool audio_io_has_hw_ref(void);
+
 /* Play `samples` samples. Returns samples written, 0 on error. */
 int audio_io_write(const int16_t *pcm, int samples);
 

@@ -23,6 +23,7 @@ static esp_codec_dev_handle_t s_out_dev;
 static esp_codec_dev_handle_t s_in_dev;
 static int s_volume = 70;
 static int32_t s_i2s_buf[AUDIO_FRAME_SAMPLES]; /* plain I2S: 32-bit slots, one task each way */
+static int16_t s_codec_in[AUDIO_FRAME_SAMPLES * 2]; /* codec: interleaved mic + reference */
 static int32_t s_i2s_out[AUDIO_FRAME_SAMPLES];
 
 #ifdef CONFIG_PTT_MIC_SHIFT
@@ -151,11 +152,14 @@ static esp_err_t init_codec(const board_t *b)
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_out_dev, &out_fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open out");
     esp_codec_dev_set_out_vol(s_out_dev, s_volume);
 
-    /* Four TDM slots arrive; keep MIC1 only so reads return mono samples. */
+    /*
+     * Four TDM slots arrive: slot 0 is MIC1, slot 1 is the ES7210 input wired
+     * to the speaker output (the echo reference). Reads return them interleaved.
+     */
     esp_codec_dev_sample_info_t in_fs = {
         .bits_per_sample = 16,
         .channel = 4,
-        .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
+        .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
         .sample_rate = AUDIO_SAMPLE_RATE,
     };
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(s_in_dev, &in_fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open in");
@@ -217,16 +221,41 @@ esp_err_t audio_io_init(const board_t *b)
     return err;
 }
 
+bool audio_io_has_hw_ref(void)
+{
+    return s_codec;
+}
+
+int audio_io_read_ref(int16_t *pcm, int16_t *ref, int samples)
+{
+    if (samples > AUDIO_FRAME_SAMPLES) {
+        samples = AUDIO_FRAME_SAMPLES;
+    }
+    if (s_codec) {
+        if (esp_codec_dev_read(s_in_dev, s_codec_in, samples * 2 * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
+            return 0;
+        }
+        for (int i = 0; i < samples; i++) {
+            pcm[i] = s_codec_in[2 * i];
+            if (ref) {
+                ref[i] = s_codec_in[2 * i + 1];
+            }
+        }
+        return samples;
+    }
+    if (ref) {
+        memset(ref, 0, samples * sizeof(int16_t));
+    }
+    return audio_io_read(pcm, samples);
+}
+
 int audio_io_read(int16_t *pcm, int samples)
 {
     if (samples > AUDIO_FRAME_SAMPLES) {
         samples = AUDIO_FRAME_SAMPLES;
     }
     if (s_codec) {
-        if (esp_codec_dev_read(s_in_dev, pcm, samples * sizeof(int16_t)) != ESP_CODEC_DEV_OK) {
-            return 0;
-        }
-        return samples;
+        return audio_io_read_ref(pcm, NULL, samples);
     }
     size_t got = 0;
     if (i2s_channel_read(s_rx, s_i2s_buf, samples * sizeof(int32_t), &got, 200) != ESP_OK) {

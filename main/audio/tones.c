@@ -13,15 +13,22 @@ typedef struct {
 
 static const tone_step_t kRxStart[] = {{1000, 3}};
 static const tone_step_t kRoger[] = {{1400, 2}, {0, 1}, {1000, 3}};
+static const tone_step_t kRing[] = {{880, 20}, {0, 10}, {880, 20}, {0, 110}};
+static const tone_step_t kRingback[] = {{425, 50}, {0, 200}};
+static const tone_step_t kHangup[] = {{800, 6}, {0, 3}, {600, 8}};
+
+#define STEPS(t) (*count = sizeof(t) / sizeof((t)[0]), (t))
 
 static const tone_step_t *steps(tone_t tone, int *count)
 {
-    if (tone == TONE_ROGER) {
-        *count = sizeof(kRoger) / sizeof(kRoger[0]);
-        return kRoger;
+    switch (tone) {
+    case TONE_ROGER: return STEPS(kRoger);
+    case TONE_RING: return STEPS(kRing);
+    case TONE_RINGBACK: return STEPS(kRingback);
+    case TONE_HANGUP: return STEPS(kHangup);
+    case TONE_RX_START:
+    default: return STEPS(kRxStart);
     }
-    *count = sizeof(kRxStart) / sizeof(kRxStart[0]);
-    return kRxStart;
 }
 
 int tone_frames(tone_t tone)

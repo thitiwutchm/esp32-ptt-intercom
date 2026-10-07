@@ -12,6 +12,15 @@ jobs:
       - name: Unit tests and C/Python interop
         run: make -C test/host
 
+  asterisk-interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Asterisk
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y asterisk asterisk-core-sounds-en
+      - name: SIP against a real Asterisk
+        run: test/asterisk/run.sh
+
   firmware:
     runs-on: ubuntu-latest
     container: espressif/idf:v5.4.2

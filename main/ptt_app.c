@@ -5,6 +5,7 @@
 
 #include "audio_io.h"
 #include "buttons.h"
+#include "call_audio.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -21,6 +22,7 @@
 #include "ptt_proto.h"
 #include "sdkconfig.h"
 #include "settings.h"
+#include "sip_client.h"
 #include "tones.h"
 #include "ui.h"
 #include "wifi.h"
@@ -34,6 +36,20 @@ static const char *TAG = "ptt";
 #define DIM_AFTER_MS 30000
 #define BACKLIGHT_ON 100
 #define BACKLIGHT_DIM 15
+
+/* Events the app task handles besides ui_event_t (same queue). */
+#define APP_EV_BOOT_CLICK 100   /* BOOT tapped */
+#define APP_EV_BOOT_LONG 101    /* BOOT held */
+#define APP_EV_BOOT_RELEASE 102 /* BOOT let go after a hold */
+#define APP_EV_AUTO_ANSWER 103  /* the PBX asked us to answer at once */
+
+#if CONFIG_PTT_SIP_ENABLE
+#define SIP_ENABLED 1
+#define SIP_CALL_TARGET CONFIG_PTT_SIP_CALL_TARGET
+#else
+#define SIP_ENABLED 0
+#define SIP_CALL_TARGET ""
+#endif
 
 #if CONFIG_PTT_CODEC_PCM16
 #define TX_CODEC PTT_CODEC_PCM16
@@ -59,6 +75,12 @@ typedef struct {
 
     /* receive */
     bool rx_roger; /* play the roger beep when this talk drains */
+
+    /* phone calls through the PBX */
+    sip_call_info_t call; /* latest state from the SIP task */
+    sip_reg_state_t sip_reg;
+    uint32_t call_start_ms;
+    bool boot_ptt; /* walkie-talkie held with BOOT */
 
     /* screen */
     char notice[32];
@@ -137,11 +159,24 @@ static void handle_floor_event_locked(ptt_floor_event_t ev, uint32_t now, effect
     }
 }
 
+static bool in_call_locked(void)
+{
+    return s.call.state != SIP_CALL_IDLE;
+}
+
 static void build_view_locked(ui_view_t *v, uint32_t now)
 {
     memset(v, 0, sizeof(*v));
+    v->sip = SIP_ENABLED ? (s.sip_reg == SIP_REG_OK) : -1;
     if (!s.wifi_up) {
         v->mode = UI_MODE_WIFI;
+    } else if (in_call_locked()) {
+        v->mode = s.call.state == SIP_CALL_INCOMING ? UI_MODE_CALL_IN
+                  : s.call.state == SIP_CALL_ACTIVE ? UI_MODE_CALL
+                                                    : UI_MODE_CALL_OUT;
+        strlcpy(v->call_peer, s.call.peer[0] ? s.call.peer : "Unknown", sizeof(v->call_peer));
+        v->call_ringing = s.call.state == SIP_CALL_RINGBACK;
+        v->call_secs = s.call.state == SIP_CALL_ACTIVE ? (int)((now - s.call_start_ms) / 1000) : 0;
     } else if (s.floor.state == PTT_FLOOR_TX) {
         v->mode = UI_MODE_TX;
     } else if (s.floor.state == PTT_FLOOR_RX) {
@@ -223,7 +258,7 @@ static void on_packet(const ptt_hdr_t *hdr, const uint8_t *payload, uint32_t src
             }
             fx.ui = changed;
         }
-    } else if (hdr->channel == s.cfg.channel) {
+    } else if (hdr->channel == s.cfg.channel && !in_call_locked()) {
         ptt_peers_touch(&s.peers, hdr->device_id, src_ip, hdr->channel, now);
         bool play = false;
         ptt_floor_event_t ev = ptt_floor_on_packet(&s.floor, hdr->type, hdr->device_id, hdr->talk_id, now, &play);
@@ -249,7 +284,9 @@ static void audio_tx_task(void *arg)
 {
     (void)arg;
     static int16_t pcm[AUDIO_FRAME_SAMPLES];
+    static int16_t ref[AUDIO_FRAME_SAMPLES];
     static uint8_t enc[AUDIO_FRAME_SAMPLES * 2];
+    const bool hw_ref = audio_io_has_hw_ref();
     static uint8_t pkt[PTT_MAX_PACKET];
     static uint32_t ips[PTT_MAX_PEERS];
     ptt_adpcm_state_t adpcm;
@@ -257,7 +294,15 @@ static void audio_tx_task(void *arg)
 
     for (;;) {
         /* Read continuously so the DMA never holds stale audio when the button goes down. */
-        if (audio_io_read(pcm, AUDIO_FRAME_SAMPLES) != AUDIO_FRAME_SAMPLES) {
+        if (audio_io_read_ref(pcm, ref, AUDIO_FRAME_SAMPLES) != AUDIO_FRAME_SAMPLES) {
+            continue;
+        }
+
+        xSemaphoreTake(s.lock, portMAX_DELAY);
+        bool call_active = s.call.state == SIP_CALL_ACTIVE;
+        xSemaphoreGive(s.lock);
+        if (call_active) {
+            call_audio_mic(pcm, hw_ref ? ref : NULL); /* echo control, 8 kHz, RTP */
             continue;
         }
 
@@ -326,92 +371,153 @@ static void play_tone(tone_t tone, int16_t *pcm)
     }
 }
 
-static void audio_rx_task(void *arg)
+/* One walkie-talkie reception, from the start beep to the roger beep. */
+static void play_ptt_session(void)
 {
-    (void)arg;
     static int16_t pcm[AUDIO_FRAME_SAMPLES];
     static int16_t last[AUDIO_FRAME_SAMPLES];
     static uint8_t frame[PTT_JB_FRAME_MAX];
 
+    audio_io_speaker_enable(true);
+    play_tone(TONE_RX_START, pcm); /* the jitter buffer fills meanwhile */
+    bool have_last = false;
+    bool aborted = false;
+
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
+        uint16_t len = 0;
+        uint8_t codec = 0;
         xSemaphoreTake(s.lock, portMAX_DELAY);
-        bool start = s.floor.state == PTT_FLOOR_RX;
-        xSemaphoreGive(s.lock);
-        if (!start) {
-            continue; /* stale wake-up */
-        }
-
-        audio_io_speaker_enable(true);
-        play_tone(TONE_RX_START, pcm); /* the jitter buffer fills meanwhile */
-        bool have_last = false;
-        bool aborted = false;
-
-        for (;;) {
-            uint16_t len = 0;
-            uint8_t codec = 0;
-            xSemaphoreTake(s.lock, portMAX_DELAY);
-            ptt_jb_result_t r = ptt_jb_get(&s.jb, frame, &len, &codec);
-            ptt_floor_state_t state = s.floor.state;
-            xSemaphoreGive(s.lock);
-
-            if (state == PTT_FLOOR_TX) {
-                aborted = true; /* we started talking: speaker off now */
-                break;
-            }
-            if (r == PTT_JB_FRAME) {
-                int n = 0;
-                if (codec == PTT_CODEC_IMA_ADPCM) {
-                    n = ptt_adpcm_decode(frame, len, pcm, AUDIO_FRAME_SAMPLES);
-                } else if (codec == PTT_CODEC_PCM16) {
-                    n = len / 2 > AUDIO_FRAME_SAMPLES ? AUDIO_FRAME_SAMPLES : len / 2;
-                    memcpy(pcm, frame, n * 2);
-                }
-                for (int i = n; i < AUDIO_FRAME_SAMPLES; i++) {
-                    pcm[i] = 0;
-                }
-                memcpy(last, pcm, sizeof(pcm));
-                have_last = true;
-            } else if (r == PTT_JB_LOST && have_last) {
-                /* Conceal one lost frame with the previous one at half level, then silence. */
-                for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                    pcm[i] = last[i] / 2;
-                }
-                have_last = false;
-            } else {
-                if (r == PTT_JB_BUFFERING && state != PTT_FLOOR_RX) {
-                    break; /* talk over and everything played */
-                }
-                memset(pcm, 0, sizeof(pcm));
-            }
-            audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
-        }
-
-        xSemaphoreTake(s.lock, portMAX_DELAY);
-        bool roger = s.rx_roger && !aborted;
-        s.rx_roger = false;
-        ESP_LOGI(TAG, "rx done: %lu frames, %lu lost, %lu late, %lu underruns",
-                 (unsigned long)s.jb.stat_received, (unsigned long)s.jb.stat_lost,
-                 (unsigned long)s.jb.stat_late, (unsigned long)s.jb.stat_underruns);
+        ptt_jb_result_t r = ptt_jb_get(&s.jb, frame, &len, &codec);
+        ptt_floor_state_t state = s.floor.state;
+        bool call = in_call_locked();
         xSemaphoreGive(s.lock);
 
-        if (roger) {
-            play_tone(TONE_ROGER, pcm);
+        if (state == PTT_FLOOR_TX || call) {
+            aborted = true; /* we started talking or a call took over: stop now */
+            break;
         }
-        if (!aborted) {
-            /* Let the DMA drain before cutting the amplifier, or the tail clicks. */
+        if (r == PTT_JB_FRAME) {
+            int n = 0;
+            if (codec == PTT_CODEC_IMA_ADPCM) {
+                n = ptt_adpcm_decode(frame, len, pcm, AUDIO_FRAME_SAMPLES);
+            } else if (codec == PTT_CODEC_PCM16) {
+                n = len / 2 > AUDIO_FRAME_SAMPLES ? AUDIO_FRAME_SAMPLES : len / 2;
+                memcpy(pcm, frame, n * 2);
+            }
+            for (int i = n; i < AUDIO_FRAME_SAMPLES; i++) {
+                pcm[i] = 0;
+            }
+            memcpy(last, pcm, sizeof(pcm));
+            have_last = true;
+        } else if (r == PTT_JB_LOST && have_last) {
+            /* Conceal one lost frame with the previous one at half level, then silence. */
+            for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                pcm[i] = last[i] / 2;
+            }
+            have_last = false;
+        } else {
+            if (r == PTT_JB_BUFFERING && state != PTT_FLOOR_RX) {
+                break; /* talk over and everything played */
+            }
             memset(pcm, 0, sizeof(pcm));
-            audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
-            audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
         }
-        audio_io_speaker_enable(false);
+        audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    }
+
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    bool roger = s.rx_roger && !aborted;
+    s.rx_roger = false;
+    ESP_LOGI(TAG, "rx done: %lu frames, %lu lost, %lu late, %lu underruns",
+             (unsigned long)s.jb.stat_received, (unsigned long)s.jb.stat_lost,
+             (unsigned long)s.jb.stat_late, (unsigned long)s.jb.stat_underruns);
+    xSemaphoreGive(s.lock);
+
+    if (roger) {
+        play_tone(TONE_ROGER, pcm);
+    }
+    if (!aborted) {
+        /* Let the DMA drain before cutting the amplifier, or the tail clicks. */
+        memset(pcm, 0, sizeof(pcm));
+        audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+        audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    }
+    audio_io_speaker_enable(false);
+}
+
+static sip_call_state_t call_state(void)
+{
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    sip_call_state_t st = s.call.state;
+    xSemaphoreGive(s.lock);
+    return st;
+}
+
+/* Ring (incoming) or ringback (outgoing, ringing there) until the call state moves on. */
+static void play_ringing(tone_t tone, sip_call_state_t while_state)
+{
+    static int16_t pcm[AUDIO_FRAME_SAMPLES];
+    audio_io_speaker_enable(true);
+    for (int i = 0; call_state() == while_state; i = (i + 1) % tone_frames(tone)) {
+        tone_frame(tone, i, pcm);
+        audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    }
+    audio_io_speaker_enable(false);
+}
+
+/* Full-duplex phone call: one speaker frame every 20 ms, written without gaps so the echo path stays fixed. */
+static void play_call(void)
+{
+    static int16_t pcm[AUDIO_FRAME_SAMPLES];
+    call_audio_begin();
+    audio_io_speaker_enable(true);
+    while (call_state() == SIP_CALL_ACTIVE) {
+        call_audio_speaker_frame(pcm);
+        audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    }
+    call_audio_end();
+    play_tone(TONE_HANGUP, pcm);
+    memset(pcm, 0, sizeof(pcm));
+    audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    audio_io_write(pcm, AUDIO_FRAME_SAMPLES);
+    audio_io_speaker_enable(false);
+}
+
+static void audio_rx_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
 
         xSemaphoreTake(s.lock, portMAX_DELAY);
-        bool again = s.floor.state == PTT_FLOOR_RX;
+        sip_call_state_t call = s.call.state;
+        bool ptt_rx = s.floor.state == PTT_FLOOR_RX;
+        xSemaphoreGive(s.lock);
+
+        switch (call) {
+        case SIP_CALL_INCOMING:
+            play_ringing(TONE_RING, SIP_CALL_INCOMING);
+            break;
+        case SIP_CALL_RINGBACK:
+            play_ringing(TONE_RINGBACK, SIP_CALL_RINGBACK);
+            break;
+        case SIP_CALL_ACTIVE:
+            play_call();
+            break;
+        case SIP_CALL_OUTGOING:
+            vTaskDelay(pdMS_TO_TICKS(20)); /* dialling: wait for ringing or answer */
+            break;
+        case SIP_CALL_IDLE:
+            if (ptt_rx) {
+                play_ptt_session();
+            }
+            break;
+        }
+        /* Whatever just finished, look again at once: the next state may already be here. */
+        xSemaphoreTake(s.lock, portMAX_DELAY);
+        bool again = s.call.state != SIP_CALL_IDLE || s.floor.state == PTT_FLOOR_RX;
         xSemaphoreGive(s.lock);
         if (again) {
-            xTaskNotifyGive(xTaskGetCurrentTaskHandle()); /* someone started while we drained */
+            xTaskNotifyGive(xTaskGetCurrentTaskHandle());
         }
     }
 }
@@ -423,14 +529,29 @@ static void post_event(ui_event_t ev)
     xQueueSend(s_events, &ev, 0);
 }
 
+static void post_app_event(int ev)
+{
+    ui_event_t e = (ui_event_t)ev;
+    xQueueSend(s_events, &e, 0);
+}
+
 static void on_button(board_button_role_t role, button_event_t ev)
 {
     switch (role) {
     case BOARD_BTN_PTT:
-        if (ev == BUTTON_PRESS) {
-            post_event(UI_EV_PTT_DOWN);
+        if (!SIP_ENABLED) {
+            /* Walkie-talkie only: talk from the moment the button goes down. */
+            if (ev == BUTTON_PRESS) {
+                post_event(UI_EV_PTT_DOWN);
+            } else if (ev == BUTTON_RELEASE) {
+                post_event(UI_EV_PTT_UP);
+            }
+        } else if (ev == BUTTON_CLICK) {
+            post_app_event(APP_EV_BOOT_CLICK);
+        } else if (ev == BUTTON_LONG_PRESS) {
+            post_app_event(APP_EV_BOOT_LONG);
         } else if (ev == BUTTON_RELEASE) {
-            post_event(UI_EV_PTT_UP);
+            post_app_event(APP_EV_BOOT_RELEASE);
         }
         break;
     case BOARD_BTN_VOL_UP:
@@ -452,7 +573,6 @@ static void on_button(board_button_role_t role, button_event_t ev)
 
 static void on_wifi(bool connected, uint32_t ip)
 {
-    (void)ip;
     xSemaphoreTake(s.lock, portMAX_DELAY);
     s.wifi_up = connected;
     xSemaphoreGive(s.lock);
@@ -460,25 +580,160 @@ static void on_wifi(bool connected, uint32_t ip)
     apply_effects(&fx);
     if (connected) {
         send_hello();
+        sip_client_network_up(ip);
+    } else {
+        sip_client_network_down();
     }
+}
+
+/* ------------------------------------------------------------------ SIP callbacks (SIP task) */
+
+static void on_sip_call(const sip_call_info_t *info)
+{
+    uint32_t now = now_ms();
+    effects_t fx = {.ui = true, .wake_player = true};
+    char text[48];
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    sip_call_state_t prev = s.call.state;
+    s.call = *info;
+    s.last_activity_ms = now;
+    if (info->state == SIP_CALL_ACTIVE && prev != SIP_CALL_ACTIVE) {
+        s.call_start_ms = now;
+    }
+    if (info->state == SIP_CALL_IDLE && prev != SIP_CALL_IDLE) {
+        switch (info->reason) {
+        case SIP_END_MISSED:
+            snprintf(text, sizeof(text), "Missed: %s", info->peer);
+            set_notice_locked(text, true, now);
+            s.notice_until_ms = now + 10000; /* keep a missed call visible longer */
+            break;
+        case SIP_END_BUSY:
+            set_notice_locked("Busy", true, now);
+            break;
+        case SIP_END_REJECTED:
+            set_notice_locked("Declined", true, now);
+            break;
+        case SIP_END_UNREACHABLE:
+            set_notice_locked("No answer", true, now);
+            break;
+        case SIP_END_FAILED:
+            snprintf(text, sizeof(text), "Call failed (%d)", info->status);
+            set_notice_locked(text, true, now);
+            break;
+        default:
+            set_notice_locked("Call ended", false, now);
+            break;
+        }
+    }
+    bool auto_answer = info->state == SIP_CALL_INCOMING && prev != SIP_CALL_INCOMING && info->auto_answer;
+    xSemaphoreGive(s.lock);
+#if CONFIG_PTT_SIP_ENABLE && CONFIG_PTT_SIP_AUTO_ANSWER
+    if (auto_answer) {
+        post_app_event(APP_EV_AUTO_ANSWER);
+    }
+#else
+    (void)auto_answer;
+#endif
+    apply_effects(&fx);
+}
+
+static void on_sip_reg(sip_reg_state_t st)
+{
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    s.sip_reg = st;
+    xSemaphoreGive(s.lock);
+    effects_t fx = {.ui = true};
+    apply_effects(&fx);
+}
+
+static bool sip_is_busy(void)
+{
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    bool busy = s.floor.state != PTT_FLOOR_IDLE;
+    xSemaphoreGive(s.lock);
+    return busy;
+}
+
+typedef enum { SIP_ACT_NONE, SIP_ACT_CALL, SIP_ACT_ANSWER, SIP_ACT_HANGUP } sip_action_t;
+
+/* What a tap on BOOT or the phone button means right now. */
+static sip_action_t call_button_action_locked(uint32_t now)
+{
+    switch (s.call.state) {
+    case SIP_CALL_INCOMING:
+        return SIP_ACT_ANSWER;
+    case SIP_CALL_OUTGOING:
+    case SIP_CALL_RINGBACK:
+    case SIP_CALL_ACTIVE:
+        return SIP_ACT_HANGUP;
+    case SIP_CALL_IDLE:
+        break;
+    }
+    if (!SIP_ENABLED) {
+        return SIP_ACT_NONE;
+    }
+    if (s.floor.state != PTT_FLOOR_IDLE) {
+        set_notice_locked("Walkie-talkie busy", true, now);
+        return SIP_ACT_NONE;
+    }
+    if (s.sip_reg != SIP_REG_OK) {
+        set_notice_locked("Phone not registered", true, now);
+        return SIP_ACT_NONE;
+    }
+    return SIP_ACT_CALL;
 }
 
 static void handle_input(ui_event_t ev, uint32_t now, effects_t *fx, bool *hello_now)
 {
     char text[32];
     bool save = false;
+    sip_action_t sip_action = SIP_ACT_NONE;
 
     xSemaphoreTake(s.lock, portMAX_DELAY);
     s.last_activity_ms = now;
     fx->ui = true;
-    switch (ev) {
+    switch ((int)ev) {
+    case UI_EV_CALL:
+    case APP_EV_BOOT_CLICK:
+        sip_action = call_button_action_locked(now);
+        break;
+    case UI_EV_REJECT:
+        if (s.call.state == SIP_CALL_INCOMING) {
+            sip_action = SIP_ACT_HANGUP;
+        }
+        break;
+    case APP_EV_AUTO_ANSWER:
+        if (s.call.state == SIP_CALL_INCOMING) {
+            sip_action = SIP_ACT_ANSWER;
+        }
+        break;
+    case APP_EV_BOOT_LONG:
+        if (s.call.state == SIP_CALL_INCOMING) {
+            sip_action = SIP_ACT_HANGUP; /* hold to decline */
+            break;
+        }
+        if (in_call_locked()) {
+            break;
+        }
+        s.boot_ptt = true; /* hold BOOT = walkie-talkie */
+        /* fall through */
     case UI_EV_PTT_DOWN:
+        if (in_call_locked()) {
+            set_notice_locked("In a call", true, now);
+            break;
+        }
         if (!s.wifi_up) {
             set_notice_locked("No Wi-Fi", true, now);
             break;
         }
         handle_floor_event_locked(ptt_floor_press(&s.floor, esp_random(), now), now, fx);
         break;
+    case APP_EV_BOOT_RELEASE:
+        if (!s.boot_ptt) {
+            break;
+        }
+        s.boot_ptt = false;
+        /* fall through */
     case UI_EV_PTT_UP:
         handle_floor_event_locked(ptt_floor_release(&s.floor, now), now, fx);
         break;
@@ -513,6 +768,24 @@ static void handle_input(ui_event_t ev, uint32_t now, effects_t *fx, bool *hello
     if (save) {
         settings_save(&cfg);
     }
+    /* SIP calls take the SIP lock, whose callbacks take ours: never call them with s.lock held. */
+    switch (sip_action) {
+    case SIP_ACT_CALL:
+        if (!sip_client_call(SIP_CALL_TARGET)) {
+            xSemaphoreTake(s.lock, portMAX_DELAY);
+            set_notice_locked("Cannot call now", true, now);
+            xSemaphoreGive(s.lock);
+        }
+        break;
+    case SIP_ACT_ANSWER:
+        sip_client_answer();
+        break;
+    case SIP_ACT_HANGUP:
+        sip_client_hangup();
+        break;
+    case SIP_ACT_NONE:
+        break;
+    }
 }
 
 static void app_task(void *arg)
@@ -520,6 +793,7 @@ static void app_task(void *arg)
     (void)arg;
     uint32_t last_hello = 0;
     uint32_t notice_shown_until = 0;
+    uint32_t last_call_tick = 0;
 
     for (;;) {
         ui_event_t ev;
@@ -539,8 +813,13 @@ static void app_task(void *arg)
             notice_shown_until = s.notice_until_ms;
             fx.ui = true;
         }
-        bool active = s.floor.state != PTT_FLOOR_IDLE || (now - s.last_activity_ms) < DIM_AFTER_MS;
+        bool active = s.floor.state != PTT_FLOOR_IDLE || in_call_locked() || (now - s.last_activity_ms) < DIM_AFTER_MS;
+        bool call_active = s.call.state == SIP_CALL_ACTIVE;
         xSemaphoreGive(s.lock);
+        if (call_active && now - last_call_tick >= 1000) {
+            last_call_tick = now; /* call timer */
+            fx.ui = true;
+        }
 
         if (active == s.dimmed) {
             s.dimmed = !active;
@@ -591,8 +870,16 @@ esp_err_t ptt_app_start(const board_t *b)
     xTaskCreatePinnedToCore(audio_tx_task, "audio_tx", 6144, NULL, 20, NULL, 1);
     xTaskCreatePinnedToCore(app_task, "app", 6144, NULL, 5, NULL, 0);
 
+    ESP_ERROR_CHECK(call_audio_init(audio_io_has_hw_ref()));
     ESP_ERROR_CHECK(wifi_start(s.cfg.name, on_wifi));
     ESP_ERROR_CHECK(ptt_net_start(CONFIG_PTT_UDP_PORT, on_packet));
+    const sip_client_cb_t sip_cb = {
+        .call_changed = on_sip_call,
+        .reg_changed = on_sip_reg,
+        .is_busy = sip_is_busy,
+        .rtp_frame = call_audio_rtp_in,
+    };
+    ESP_ERROR_CHECK(sip_client_start(&sip_cb));
     buttons_start(b, on_button);
     return ESP_OK;
 }

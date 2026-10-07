@@ -15,6 +15,9 @@ typedef enum {
     UI_MODE_IDLE,
     UI_MODE_TX,
     UI_MODE_RX,
+    UI_MODE_CALL_IN,  /* phone call ringing here */
+    UI_MODE_CALL_OUT, /* we are calling */
+    UI_MODE_CALL,     /* in a phone call */
 } ui_mode_t;
 
 typedef enum {
@@ -24,6 +27,8 @@ typedef enum {
     UI_EV_CH_DOWN,
     UI_EV_VOL_UP,
     UI_EV_VOL_DOWN,
+    UI_EV_CALL,   /* call / answer / hang up, whichever fits */
+    UI_EV_REJECT, /* decline a ringing call */
 } ui_event_t;
 
 typedef struct {
@@ -35,6 +40,10 @@ typedef struct {
     char talker[PTT_NAME_LEN + 1]; /* RX only */
     char notice[32];               /* short-lived message, empty for none */
     bool notice_warn;              /* show the notice in warning colour */
+    int sip;                       /* -1 SIP disabled, 0 not registered, 1 registered */
+    char call_peer[32];            /* CALL_* modes */
+    bool call_ringing;             /* CALL_OUT: the other side rings */
+    int call_secs;                 /* CALL: duration */
 } ui_view_t;
 
 /* Called from the LVGL task. Must not block: post to a queue. */

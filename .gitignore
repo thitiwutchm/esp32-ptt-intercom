@@ -7,3 +7,4 @@ __pycache__/
 *.wav
 libptt_core.so
 build-*/
+test/host/test_voip

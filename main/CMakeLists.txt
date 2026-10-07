@@ -12,9 +12,12 @@ idf_component_register(
         "net/wifi.c"
         "net/ptt_net.c"
         "ui/ui.c"
-    INCLUDE_DIRS "." "board" "audio" "net" "ui"
+        "call/sip_client.c"
+        "call/call_audio.c"
+    INCLUDE_DIRS "." "board" "audio" "net" "ui" "call"
     REQUIRES
         ptt_core
+        voip_core
         nvs_flash
         esp_wifi
         esp_netif

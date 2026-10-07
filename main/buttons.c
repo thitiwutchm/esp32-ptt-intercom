@@ -6,6 +6,7 @@
 #define POLL_MS 10
 #define DEBOUNCE_POLLS 3
 #define LONG_PRESS_MS 800
+#define LONG_PRESS_PTT_MS 350 /* BOOT: tap = call, hold = talk; keep the hold short */
 
 typedef struct {
     board_button_t btn;
@@ -44,7 +45,8 @@ static void task(void *arg)
                 }
             } else {
                 b->stable = 0;
-                if (b->pressed && !b->long_sent && now - b->since >= pdMS_TO_TICKS(LONG_PRESS_MS)) {
+                int long_ms = b->btn.role == BOARD_BTN_PTT ? LONG_PRESS_PTT_MS : LONG_PRESS_MS;
+                if (b->pressed && !b->long_sent && now - b->since >= pdMS_TO_TICKS(long_ms)) {
                     b->long_sent = true;
                     s_cb(b->btn.role, BUTTON_LONG_PRESS);
                 }
