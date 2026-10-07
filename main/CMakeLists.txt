@@ -1,0 +1,31 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "ptt_app.c"
+        "settings.c"
+        "buttons.c"
+        "board/board_common.c"
+        "board/board_echoear.c"
+        "board/board_cube.c"
+        "audio/audio_io.c"
+        "audio/tones.c"
+        "net/wifi.c"
+        "net/ptt_net.c"
+        "ui/ui.c"
+    INCLUDE_DIRS "." "board" "audio" "net" "ui"
+    REQUIRES
+        ptt_core
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_timer
+        esp_adc
+        esp_lcd
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_i2s
+        esp_driver_ledc
+        esp_driver_spi
+        lwip
+)

@@ -1,0 +1,2 @@
+# Append with: idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cube" build
+CONFIG_PTT_BOARD_CUBE=y

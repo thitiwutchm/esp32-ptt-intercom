@@ -1,0 +1,75 @@
+menu "PTT Intercom"
+
+    choice PTT_BOARD
+        prompt "Board"
+        default PTT_BOARD_ECHOEAR
+        help
+            Pin maps follow the xiaozhi-esp32 board definitions
+            (boards/espressif/esp-vocat and boards/nologo/xingzhi-cube-1.54tft-wifi).
+
+        config PTT_BOARD_ECHOEAR
+            bool "EchoEar / ESP-VoCat (1.85\" round 360x360 ST77916 + CST816, ES8311 + ES7210)"
+        config PTT_BOARD_CUBE
+            bool "Xingzhi CUBE 1.54\" TFT Wi-Fi (240x240 ST7789, I2S mic + I2S amp)"
+    endchoice
+
+    config PTT_WIFI_SSID
+        string "Wi-Fi SSID (2.4 GHz)"
+        default "myssid"
+
+    config PTT_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "mypassword"
+
+    config PTT_UDP_PORT
+        int "UDP port"
+        range 1024 65535
+        default 47000
+        help
+            Every device on the LAN must use the same port.
+
+    config PTT_DEFAULT_CHANNEL
+        int "Channel on first boot"
+        range 1 16
+        default 1
+
+    config PTT_DEFAULT_VOLUME
+        int "Speaker volume on first boot (0-100)"
+        range 0 100
+        default 70
+
+    choice PTT_CODEC
+        prompt "Voice codec for sending"
+        default PTT_CODEC_ADPCM
+        help
+            Receivers decode both, so devices with different settings still talk.
+
+        config PTT_CODEC_ADPCM
+            bool "IMA ADPCM, 64 kbit/s"
+        config PTT_CODEC_PCM16
+            bool "PCM 16-bit, 256 kbit/s"
+    endchoice
+
+    config PTT_JITTER_FRAMES
+        int "Jitter buffer prefill (20 ms frames)"
+        range 1 10
+        default 3
+        help
+            Frames queued before playback starts. 3 = 60 ms. Raise it if
+            audio stutters on a busy network.
+
+    config PTT_MIC_GAIN_DB
+        int "Microphone gain in dB (EchoEar ES7210)"
+        range 0 37
+        default 30
+        depends on PTT_BOARD_ECHOEAR
+
+    config PTT_MIC_SHIFT
+        int "Microphone 32->16 bit right shift (CUBE I2S mic)"
+        range 8 16
+        default 12
+        depends on PTT_BOARD_CUBE
+        help
+            Smaller shifts mean more gain. 16 is the raw 24-bit mic level.
+
+endmenu
