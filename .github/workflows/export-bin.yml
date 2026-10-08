@@ -1,0 +1,30 @@
+# One-off: copy the CUBE BLE-only factory image built by run 37774022620 onto
+# the firmware-bin branch, so it can be fetched with plain git.
+name: export-bin
+on:
+  push:
+    branches: [firmware-bin-export]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-cube
+          run-id: 37774022620
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: fw
+      - name: Push the image to the firmware-bin branch
+        run: |
+          mkdir out
+          cp fw/esp32-ptt-intercom-cube-factory.bin out/
+          cd out
+          git init -q -b firmware-bin
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add .
+          git commit -qm "CUBE BLE-only factory image (run 37774022620)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" firmware-bin
