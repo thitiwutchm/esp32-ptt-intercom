@@ -25,6 +25,8 @@ jobs:
         run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y asterisk asterisk-core-sounds-en
       - name: SIP against a real Asterisk
         run: test/asterisk/run.sh
+      - name: tools/sip_phone.py against the device's SIP stack
+        run: test/softphone/run.sh
 
   firmware:
     runs-on: ubuntu-latest
