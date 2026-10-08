@@ -158,7 +158,7 @@ static esp_err_t json_get(httpd_req_t *req)
     for (int i = 0; i < np; i++) {
         irk_hex(peers[i].irk, hex);
         ck_printf(&c, "%s{\"id\":%u,\"present\":%s,\"rssi\":%d,\"ago\":%u,\"name\":", i ? "," : "", peers[i].id,
-                  peers[i].present ? "true" : "false", peers[i].rssi, (unsigned)(peers[i].ago_ms / 1000));
+                  peers[i].present ? "true" : "false", peers[i].last_rssi, (unsigned)(peers[i].ago_ms / 1000));
         ck_json_str(&c, peers[i].name);
         ck_printf(&c, ",\"irk\":\"%s\"}", hex);
     }
