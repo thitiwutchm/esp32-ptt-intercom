@@ -19,6 +19,7 @@ typedef enum {
     UI_MODE_CALL_OUT, /* we are calling */
     UI_MODE_CALL,     /* in a phone call */
     UI_MODE_SETUP,    /* phone setup: QR code for the setup network */
+    UI_MODE_PRESENCE, /* BLE-only build: Bluetooth presence logger */
 } ui_mode_t;
 
 typedef enum {

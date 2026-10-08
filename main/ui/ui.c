@@ -374,6 +374,17 @@ void ui_update(const ui_view_t *v)
         snprintf(buf, sizeof(buf), "%s  %d:%02d", v->call_peer, v->call_secs / 60, v->call_secs % 60);
         status = buf;
         break;
+    case UI_MODE_PRESENCE:
+        ring = COLOR_BLUE;
+        button = COLOR_RING_IDLE;
+        center = "BT";
+        if (v->online > 0) {
+            snprintf(buf, sizeof(buf), "%d phone%s nearby", v->online, v->online > 1 ? "s" : "");
+        } else {
+            snprintf(buf, sizeof(buf), "BOOT: add phone");
+        }
+        status = buf;
+        break;
     case UI_MODE_IDLE:
     default:
         if (s_touch) {
@@ -399,6 +410,8 @@ void ui_update(const ui_view_t *v)
     if (v->mode == UI_MODE_WIFI && !v->wifi_unset) {
         /* Which network, and the way out if it is the wrong one. */
         snprintf(info, sizeof(info), "%s  |  hold BOOT 8 s: setup", v->wifi_ssid);
+    } else if (v->mode == UI_MODE_PRESENCE) {
+        snprintf(info, sizeof(info), "%s  |  /presence", v->ip[0] ? v->ip : "offline");
     } else {
         /* The address is what people need to call or reach this device, so it wins over the name. */
         int n = snprintf(info, sizeof(info), "%s  |  %d online", v->ip[0] ? v->ip : v->name, v->online);
@@ -442,7 +455,11 @@ void ui_update(const ui_view_t *v)
     lv_obj_set_style_border_color(s_ring, lv_color_hex(ring), 0);
     lv_obj_set_style_bg_color(s_ptt, lv_color_hex(button), 0);
     lv_label_set_text(s_ptt_label, center);
-    lv_label_set_text_fmt(s_channel, "CH %d", v->channel);
+    if (v->mode == UI_MODE_PRESENCE) {
+        lv_label_set_text(s_channel, "BLE");
+    } else {
+        lv_label_set_text_fmt(s_channel, "CH %d", v->channel);
+    }
     lv_label_set_text(s_status, status);
     lv_obj_set_style_text_color(s_status, lv_color_hex(warn ? COLOR_ORANGE : COLOR_TEXT), 0);
     lv_label_set_text(s_info, info);

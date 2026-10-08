@@ -186,6 +186,18 @@ menu "PTT Intercom"
                 How long the device stays connectable for a new phone to pair
                 after you press "add phone" on the log page.
 
+        config PTT_PRESENCE_ONLY
+            bool "BLE-only firmware: presence logger, no intercom"
+            default n
+            depends on PTT_PRESENCE_ENABLE
+            help
+                Build a slim firmware that runs only the Bluetooth presence
+                logger: display, Wi-Fi (with phone setup) and /presence, with
+                no microphone, speaker, walkie-talkie or SIP. This leaves the
+                audio-heavy subsystems uninitialised, freeing the internal RAM
+                that running them alongside NimBLE would need. BOOT taps open
+                the pairing window; hold BOOT 8 s for Wi-Fi setup.
+
     endmenu
 
 endmenu

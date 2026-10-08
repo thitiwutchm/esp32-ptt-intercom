@@ -4,6 +4,9 @@ CONFIG_PTT_BOARD_CUBE=y
 # Bluetooth LE presence log. The CUBE recognises phones that paired with it
 # once (by their IRK) and logs when they are nearby, served at /presence.
 CONFIG_PTT_PRESENCE_ENABLE=y
+# BLE-only firmware: no mic/speaker/walkie-talkie/SIP, so the audio subsystems
+# never start and their internal RAM stays free for NimBLE.
+CONFIG_PTT_PRESENCE_ONLY=y
 
 # NimBLE host + BLE controller. Scanner + connectable peripheral for pairing.
 CONFIG_BT_ENABLED=y

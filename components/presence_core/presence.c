@@ -64,6 +64,19 @@ bool presence_enroll_active(void)
     return ble_presence_enroll_active();
 }
 
+int presence_present_count(void)
+{
+    presence_peer_view_t peers[PRESENCE_MAX_PEERS];
+    int n = presence_db_peers(peers, PRESENCE_MAX_PEERS);
+    int present = 0;
+    for (int i = 0; i < n; i++) {
+        if (peers[i].present) {
+            present++;
+        }
+    }
+    return present;
+}
+
 #else /* feature off: no-op stubs so the app links on boards without it */
 
 esp_err_t presence_start(const char *suffix, const presence_cb_t *cb)
@@ -78,5 +91,6 @@ void presence_web_pause(void) {}
 void presence_web_resume(void) {}
 void presence_enroll_begin(void) {}
 bool presence_enroll_active(void) { return false; }
+int presence_present_count(void) { return 0; }
 
 #endif

@@ -41,6 +41,9 @@ void presence_web_resume(void);
 void presence_enroll_begin(void);
 bool presence_enroll_active(void);
 
+/* Count of enrolled phones currently in range (for the on-device screen). */
+int presence_present_count(void);
+
 #ifdef __cplusplus
 }
 #endif

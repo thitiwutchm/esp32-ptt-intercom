@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ptt_app.c"
+        "presence_app.c"
         "settings.c"
         "buttons.c"
         "board/board_common.c"
