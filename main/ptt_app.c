@@ -20,6 +20,7 @@
 #include "ptt_adpcm.h"
 #include "ptt_floor.h"
 #include "ptt_jitter.h"
+#include "presence.h"
 #include "ptt_net.h"
 #include "ptt_peers.h"
 #include "ptt_proto.h"
@@ -653,9 +654,24 @@ static void on_wifi(bool connected, uint32_t ip)
     if (connected) {
         send_hello();
         sip_client_network_up(ip);
+        presence_network_up(ip); /* start SNTP and the /presence web server */
     } else {
         sip_client_network_down();
+        presence_network_down();
     }
+}
+
+/* Short on-screen hint from the presence logger (BLE task). The screen font is
+ * Latin-only, so these messages stay in English. */
+static void on_presence_notice(const char *text, bool warn)
+{
+    uint32_t now = now_ms();
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    set_notice_locked(text, warn, now);
+    s.last_activity_ms = now;
+    xSemaphoreGive(s.lock);
+    effects_t fx = {.ui = true};
+    apply_effects(&fx);
 }
 
 /* ------------------------------------------------------------------ SIP callbacks (SIP task) */
@@ -744,6 +760,7 @@ static void setup_enter(uint32_t now)
         return;
     }
     ESP_LOGI(TAG, "phone setup: %u bytes internal RAM free", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    presence_web_pause(); /* the setup portal needs port 80 */
     char ssid[33], pass[17];
     snprintf(ssid, sizeof(ssid), "PTT-%04X-Setup", (unsigned)(s.my_id & 0xFFFF));
     snprintf(pass, sizeof(pass), "%08lu", (unsigned long)(esp_random() % 100000000UL));
@@ -763,6 +780,7 @@ static void setup_enter(uint32_t now)
         s.setup_auto_done = false;
         s.setup_retry_ms = now + 5000;
         xSemaphoreGive(s.lock);
+        presence_web_resume(); /* portal never came up: take the port back */
         return;
     }
     xSemaphoreTake(s.lock, portMAX_DELAY);
@@ -780,6 +798,7 @@ static void setup_leave(void)
     xSemaphoreTake(s.lock, portMAX_DELAY);
     s.setup_active = false;
     xSemaphoreGive(s.lock);
+    presence_web_resume(); /* back to normal: serve the log again */
 }
 
 typedef enum { SIP_ACT_NONE, SIP_ACT_CALL, SIP_ACT_ANSWER, SIP_ACT_HANGUP } sip_action_t;
@@ -1068,6 +1087,16 @@ esp_err_t ptt_app_start(const board_t *b)
         char c = s.cfg.name[i];
         hostname[i] = (c == '\0' || isalnum((unsigned char)c)) ? c : '-';
     }
+    /* Presence logger before Wi-Fi: the store must be ready before on_wifi
+     * can start the /presence server. A failure here must not stop the
+     * intercom, so it is logged, not fatal. */
+    char ble_suffix[8];
+    snprintf(ble_suffix, sizeof(ble_suffix), "%04X", (unsigned)(s.my_id & 0xFFFF));
+    const presence_cb_t presence_cb = {.notice = on_presence_notice};
+    if (presence_start(ble_suffix, &presence_cb) != ESP_OK) {
+        ESP_LOGW(TAG, "presence logger unavailable");
+    }
+
     ESP_ERROR_CHECK(wifi_start(hostname, s.cfg.wifi_ssid, s.cfg.wifi_pass, on_wifi));
     ESP_ERROR_CHECK(ptt_net_start(CONFIG_PTT_UDP_PORT, on_packet));
     const sip_client_cb_t sip_cb = {

@@ -9,3 +9,4 @@ libptt_core.so
 build-*/
 test/host/test_voip
 test/host/test_setup
+test/host/test_presence

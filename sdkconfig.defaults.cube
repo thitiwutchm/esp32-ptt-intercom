@@ -1,2 +1,23 @@
 # Append with: idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cube" build
 CONFIG_PTT_BOARD_CUBE=y
+
+# Bluetooth LE presence log. The CUBE recognises phones that paired with it
+# once (by their IRK) and logs when they are nearby, served at /presence.
+CONFIG_PTT_PRESENCE_ENABLE=y
+
+# NimBLE host + BLE controller. Scanner + connectable peripheral for pairing.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+# Bonds live in RAM only: we copy each phone's IRK into our own store, so there
+# is no need to keep the link-layer bond across reboots (and it spares NVS).
+CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# Internal RAM is tight here (LVGL, I2S DMA, Wi-Fi); keep NimBLE in PSRAM.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
+
+# Wi-Fi/BLE software coexistence so scanning does not starve the voice path.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

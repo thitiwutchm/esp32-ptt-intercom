@@ -21,6 +21,7 @@ idf_component_register(
         ptt_core
         voip_core
         setup_core
+        presence_core
         esp_http_server
         nvs_flash
         esp_wifi
