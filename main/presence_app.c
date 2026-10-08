@@ -356,7 +356,7 @@ static void app_task(void *arg)
             esp_restart();
         }
         if (want_setup) {
-            ESP_LOGW(TAG, have_wifi ? "Wi-Fi not reachable: opening phone setup" : "no Wi-Fi yet: opening phone setup");
+            ESP_LOGW(TAG, "%s", have_wifi ? "Wi-Fi not reachable: opening phone setup" : "no Wi-Fi yet: opening phone setup");
             setup_enter(now);
         } else if (setup_expired) {
             setup_leave();
