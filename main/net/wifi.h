@@ -33,3 +33,15 @@ int wifi_scan(wifi_scan_item_t *out, int max);
 
 /* True once the station has had an address since boot. */
 bool wifi_ever_connected(void);
+
+typedef enum {
+    WIFI_ERR_NONE = 0,  /* connected, or no attempt has failed yet */
+    WIFI_ERR_NOT_FOUND, /* network not seen (wrong name, out of range, 5 GHz only) */
+    WIFI_ERR_PASSWORD,  /* handshake failed: almost always a wrong password */
+    WIFI_ERR_SECURITY,  /* network found but its security mode is not supported */
+    WIFI_ERR_OTHER,
+} wifi_err_t;
+
+/* Why the station is not connected. reason (optional) gets the last disconnect code,
+ * failures (optional) the attempts that failed in a row. */
+wifi_err_t wifi_last_error(int *reason, int *failures);

@@ -22,6 +22,8 @@ static volatile bool s_ap_on;
 static bool s_have_ssid;
 static TimerHandle_t s_retry_timer;
 static SemaphoreHandle_t s_scan_lock;
+static volatile int s_last_reason;
+static volatile int s_failures;
 
 static void retry_cb(TimerHandle_t t)
 {
@@ -42,6 +44,13 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *d = data;
         ESP_LOGW(TAG, "disconnected (reason %d), retrying", d->reason);
+        /* Our own disconnect (opening the setup network) says nothing about the network. */
+        if (!(d->reason == WIFI_REASON_ASSOC_LEAVE && !s_connected)) {
+            s_last_reason = d->reason;
+            if (!s_connected) {
+                s_failures++;
+            }
+        }
         bool was = s_connected;
         s_connected = false;
         if (was && s_cb) {
@@ -55,6 +64,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_wifi_set_ps(WIFI_PS_NONE);
         s_connected = true;
         s_ever_connected = true;
+        s_last_reason = 0;
+        s_failures = 0;
         if (s_cb) {
             s_cb(true, e->ip_info.ip.addr);
         }
@@ -88,6 +99,7 @@ esp_err_t wifi_start(const char *hostname, const char *ssid, const char *passwor
         cfg.sta.threshold.authmode = password[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
         cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
         cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+        cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH; /* WPA3 routers that only do hash-to-element */
     }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
@@ -117,6 +129,37 @@ bool wifi_get_addresses(uint32_t *ip, uint32_t *broadcast)
 bool wifi_ever_connected(void)
 {
     return s_ever_connected;
+}
+
+wifi_err_t wifi_last_error(int *reason, int *failures)
+{
+    int r = s_connected ? 0 : s_last_reason;
+    if (reason) {
+        *reason = r;
+    }
+    if (failures) {
+        *failures = s_connected ? 0 : s_failures;
+    }
+    switch (r) {
+    case 0:
+        return WIFI_ERR_NONE;
+    case WIFI_REASON_NO_AP_FOUND:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return WIFI_ERR_NOT_FOUND;
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_MIC_FAILURE:
+        return WIFI_ERR_PASSWORD;
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+    case WIFI_REASON_AKMP_INVALID:
+    case WIFI_REASON_BAD_CIPHER_OR_AKM:
+    case WIFI_REASON_802_1X_AUTH_FAILED:
+        return WIFI_ERR_SECURITY;
+    default:
+        return WIFI_ERR_OTHER;
+    }
 }
 
 esp_err_t wifi_ap_start(const char *ssid, const char *password)

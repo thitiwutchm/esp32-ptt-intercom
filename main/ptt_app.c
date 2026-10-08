@@ -51,6 +51,7 @@ static const char *TAG = "ptt";
 #define APP_EV_SETUP_CANCEL 106 /* the setup page was left without saving */
 
 #define SETUP_AUTO_AFTER_MS 90000      /* never connected this long after boot: open setup */
+#define SETUP_AUTO_BAD_TRIES 3         /* ...or sooner after this many wrong-password failures */
 #define SETUP_TIMEOUT_MS (15 * 60000)  /* close an unused setup network */
 #define REBOOT_DELAY_MS 1500
 
@@ -189,10 +190,39 @@ static bool in_call_locked(void)
     return s.call.state != SIP_CALL_IDLE;
 }
 
+/* Short English reason why Wi-Fi does not connect (the screen font has no Thai), or "" while trying. */
+static void wifi_error_text(char *out, size_t cap)
+{
+    int reason, failures;
+    wifi_err_t e = wifi_last_error(&reason, &failures);
+    out[0] = '\0';
+    if (failures < 2) {
+        return; /* one failure is normal while the router answers */
+    }
+    switch (e) {
+    case WIFI_ERR_NONE:
+        break;
+    case WIFI_ERR_NOT_FOUND:
+        snprintf(out, cap, "Wi-Fi not found (2.4 GHz?)");
+        break;
+    case WIFI_ERR_PASSWORD:
+        snprintf(out, cap, "Wrong Wi-Fi password?");
+        break;
+    case WIFI_ERR_SECURITY:
+        snprintf(out, cap, "Wi-Fi security not supported");
+        break;
+    case WIFI_ERR_OTHER:
+        snprintf(out, cap, "Wi-Fi failed (reason %d)", reason);
+        break;
+    }
+}
+
 static void build_view_locked(ui_view_t *v, uint32_t now)
 {
     memset(v, 0, sizeof(*v));
     v->sip = sip_on() ? (s.sip_reg == SIP_REG_OK) : -1;
+    strlcpy(v->wifi_ssid, s.cfg.wifi_ssid, sizeof(v->wifi_ssid));
+    wifi_error_text(v->wifi_err, sizeof(v->wifi_err));
     if (s.setup_active && !in_call_locked()) {
         v->mode = UI_MODE_SETUP;
         strlcpy(v->setup_ssid, s.setup_ssid, sizeof(v->setup_ssid));
@@ -954,8 +984,11 @@ static void app_task(void *arg)
         xSemaphoreTake(s.lock, portMAX_DELAY);
         bool setup_on = s.setup_active;
         bool have_wifi = s.cfg.wifi_ssid[0] != '\0';
+        int failures;
+        wifi_err_t werr = wifi_last_error(NULL, &failures);
+        bool hopeless = (werr == WIFI_ERR_PASSWORD || werr == WIFI_ERR_SECURITY) && failures >= SETUP_AUTO_BAD_TRIES;
         bool want_setup = !setup_on && !s.setup_auto_done && (int32_t)(now - s.setup_retry_ms) >= 0 &&
-                          (!have_wifi || (!wifi_ever_connected() && now > SETUP_AUTO_AFTER_MS));
+                          (!have_wifi || (!wifi_ever_connected() && (hopeless || now > SETUP_AUTO_AFTER_MS)));
         bool setup_expired = setup_on && have_wifi && (int32_t)(now - s.setup_until_ms) > 0;
         uint32_t reboot_at = s.reboot_at_ms;
         if (want_setup) {

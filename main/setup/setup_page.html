@@ -44,7 +44,8 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--tex
 <input id="wifi_ssid" name="wifi_ssid" maxlength="32" autocomplete="off" autocapitalize="none">
 <div class="err" data-for="wifi_ssid"></div>
 <label for="wifi_pass">รหัสผ่าน Wi-Fi</label>
-<input id="wifi_pass" name="wifi_pass" type="password" maxlength="64" autocomplete="new-password">
+<input id="wifi_pass" name="wifi_pass" type="password" maxlength="64" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+<label class="check"><input type="checkbox" id="show_pass"> แสดงรหัสผ่าน</label>
 <div class="hint" id="wifi_pass_hint"></div>
 <div class="err" data-for="wifi_pass"></div>
 </section>
@@ -67,7 +68,7 @@ button.ghost{background:transparent;border:1px solid var(--line);color:var(--tex
 <div class="err" data-for="sip_server"></div><div class="err" data-for="sip_port"></div>
 <div class="row">
 <div><label for="sip_user">เบอร์ภายใน</label><input id="sip_user" name="sip_user" maxlength="31" inputmode="numeric" autocapitalize="none"></div>
-<div><label for="sip_pass">รหัสผ่าน SIP</label><input id="sip_pass" name="sip_pass" type="password" maxlength="63" autocomplete="new-password"></div>
+<div><label for="sip_pass">รหัสผ่าน SIP</label><input id="sip_pass" name="sip_pass" type="password" maxlength="63" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
 </div>
 <div class="hint" id="sip_pass_hint"></div>
 <div class="err" data-for="sip_user"></div><div class="err" data-for="sip_pass"></div>
@@ -106,6 +107,7 @@ async function getJSON(url, opts, tries = 5){
   }
 }
 $("sip_enabled").addEventListener("change", sipToggle);
+$("show_pass").addEventListener("change", e => { $("wifi_pass").type = e.target.checked ? "text" : "password"; });
 
 async function load(){
   try {
@@ -117,7 +119,14 @@ async function load(){
     $("sip_pass_hint").textContent = c.sip_pass_set ? "รหัส SIP: เว้นว่างไว้ = ใช้รหัสเดิม" : "";
     $("dev").textContent = "เครื่อง " + c.name;
     sipToggle();
-    msg("");
+    const why = {password: "รหัสผ่านไม่ถูกต้อง", not_found: "หาเครือข่ายไม่เจอ (ต้องเป็น 2.4 GHz และอยู่ในระยะ)",
+                 security: "router ใช้การเข้ารหัสที่เครื่องไม่รองรับ (ลองตั้ง router เป็น WPA2)",
+                 other: "ต่อไม่สำเร็จ (รหัส " + c.wifi_reason + ")"};
+    if (c.wifi_error && c.wifi_ssid) {
+      const t = "ต่อ Wi-Fi \"" + c.wifi_ssid + "\" ไม่ได้: " + why[c.wifi_error];
+      msg(t, true);
+      document.querySelector('.err[data-for="' + (c.wifi_error == "not_found" ? "wifi_ssid" : "wifi_pass") + '"]').textContent = t;
+    } else msg("");
     return true;
   } catch (e) { msg("โหลดค่าไม่ได้ ลองดึงหน้าลงเพื่อรีเฟรช (" + e + ")", true); return false; }
 }
@@ -155,7 +164,8 @@ $("f").addEventListener("submit", async e => {
   e.preventDefault();
   clearErrors();
   const body = new URLSearchParams();
-  for (const f of fields) body.set(f, $(f).value.trim());
+  /* Passwords exactly as typed: spaces can be part of them. */
+  for (const f of fields) body.set(f, f.endsWith("_pass") ? $(f).value : $(f).value.trim());
   body.set("sip_enabled", $("sip_enabled").checked ? "1" : "0");
   body.set("sip_auto_answer", $("sip_auto_answer").checked ? "1" : "0");
   $("save").disabled = true;

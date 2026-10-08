@@ -45,6 +45,8 @@ typedef struct {
     bool notice_warn;              /* show the notice in warning colour */
     int sip;                       /* -1 SIP disabled, 0 not registered, 1 registered */
     bool wifi_unset;               /* WIFI: no network configured yet */
+    char wifi_ssid[33];            /* WIFI, SETUP: the network we try to join */
+    char wifi_err[40];             /* WIFI, SETUP: why joining it fails, empty if unknown */
     char call_peer[32];            /* CALL_* modes */
     bool call_ringing;             /* CALL_OUT: the other side rings */
     int call_secs;                 /* CALL: duration */

@@ -122,6 +122,13 @@ static esp_err_t config_get(httpd_req_t *req)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     size_t n = config_to_json(&s_cfg, json, sizeof(json));
     xSemaphoreGive(s_lock);
+    /* Tell the page why the saved network does not connect. */
+    static const char *const names[] = {"", "not_found", "password", "security", "other"};
+    int reason;
+    wifi_err_t err = wifi_last_error(&reason, NULL);
+    if (n && err != WIFI_ERR_NONE && n + 48 < sizeof(json)) {
+        snprintf(json + n - 1, sizeof(json) - n + 1, ",\"wifi_error\":\"%s\",\"wifi_reason\":%d}", names[err], reason);
+    }
     return n ? send_json(req, "200 OK", json) : httpd_resp_send_500(req);
 }
 

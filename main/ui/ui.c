@@ -340,7 +340,7 @@ void ui_update(const ui_view_t *v)
     case UI_MODE_WIFI:
         ring = COLOR_RING_WIFI;
         button = COLOR_RING_IDLE;
-        status = v->wifi_unset ? "No Wi-Fi: hold BOOT 8 s" : "Connecting Wi-Fi...";
+        status = v->wifi_unset ? "No Wi-Fi: hold BOOT 8 s" : v->wifi_err[0] ? v->wifi_err : "Connecting Wi-Fi...";
         break;
     case UI_MODE_TX:
         ring = button = COLOR_RED;
@@ -388,19 +388,26 @@ void ui_update(const ui_view_t *v)
     bool warn = v->notice[0] && v->notice_warn;
     if (v->notice[0]) {
         status = v->notice;
+    } else if (v->mode == UI_MODE_WIFI && v->wifi_err[0]) {
+        warn = true;
     }
     if (warn) {
         ring = COLOR_ORANGE;
     }
 
     char info[80];
-    /* The address is what people need to call or reach this device, so it wins over the name. */
-    int n = snprintf(info, sizeof(info), "%s  |  %d online", v->ip[0] ? v->ip : v->name, v->online);
-    if (v->battery >= 0) {
-        n += snprintf(info + n, sizeof(info) - n, "  |  %d%%", v->battery);
-    }
-    if (v->sip >= 0) {
-        snprintf(info + n, sizeof(info) - n, "  |  " LV_SYMBOL_CALL "%s", v->sip ? "" : " !");
+    if (v->mode == UI_MODE_WIFI && !v->wifi_unset) {
+        /* Which network, and the way out if it is the wrong one. */
+        snprintf(info, sizeof(info), "%s  |  hold BOOT 8 s: setup", v->wifi_ssid);
+    } else {
+        /* The address is what people need to call or reach this device, so it wins over the name. */
+        int n = snprintf(info, sizeof(info), "%s  |  %d online", v->ip[0] ? v->ip : v->name, v->online);
+        if (v->battery >= 0) {
+            n += snprintf(info + n, sizeof(info) - n, "  |  %d%%", v->battery);
+        }
+        if (v->sip >= 0) {
+            snprintf(info + n, sizeof(info) - n, "  |  " LV_SYMBOL_CALL "%s", v->sip ? "" : " !");
+        }
     }
 
     if (!lvgl_port_lock(100)) {
@@ -419,7 +426,9 @@ void ui_update(const ui_view_t *v)
         int n = snprintf(text, sizeof(text), "Wi-Fi %s\nPassword %s\nthen open http://192.168.4.1", v->setup_ssid,
                          v->setup_pass);
         if (v->setup_lan_ip[0]) {
-            snprintf(text + n, sizeof(text) - n, "\nor http://%s", v->setup_lan_ip);
+            n += snprintf(text + n, sizeof(text) - n, "\nor http://%s", v->setup_lan_ip);
+        } else if (v->wifi_err[0] && n < (int)sizeof(text)) {
+            snprintf(text + n, sizeof(text) - n, "\n%s: %s", v->wifi_ssid, v->wifi_err);
         }
         if (v->notice[0]) {
             snprintf(text, sizeof(text), "%s", v->notice);
